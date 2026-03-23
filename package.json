@@ -1,0 +1,32 @@
+{
+  "name": "dataset-z09",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "module": "lib/index.ts",
+  "files": ["lib"],
+  "scripts": {
+    "start": "cosmos",
+    "build:site": "cosmos-export",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "formatcheck": "biome check .",
+    "format": "biome check --write ."
+  },
+  "dependencies": {
+    "graphics-debug": "^0.0.76",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "latest",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react-cosmos": "^7.0.0",
+    "react-cosmos-plugin-vite": "^7.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.14"
+  }
+}
