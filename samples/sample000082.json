@@ -28,5 +28,26 @@
       "z": 0.00
     }
   ],
-  "solvable": true
+  "solvable": true,
+  "solvedRoutes": [
+    {
+      "connectionName": "conn00",
+      "route": [
+        {
+          "x": 0.83,
+          "y": -0.45,
+          "z": 0.00
+        },
+        {
+          "x": -0.83,
+          "y": -0.05,
+          "z": 0.00
+        }
+      ],
+      "traceThickness": 0.10,
+      "viaDiameter": 0.30,
+      "vias": [],
+      "rootConnectionName": "root00"
+    }
+  ]
 }

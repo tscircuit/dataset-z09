@@ -281,6 +281,7 @@ export const createDatasetSample = (
 ): DatasetSample => ({
   ...generateNodeWithPortPoints(sampleIndex, datasetSeed),
   solvable,
+  solvedRoutes: [],
 });
 
 export const scaleNodeWithPortPoints = (

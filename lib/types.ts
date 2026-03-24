@@ -1,3 +1,5 @@
+import type { HighDensityIntraNodeRoute } from "@tscircuit/high-density-a01";
+
 export type PortPoint = {
   connectionName: string;
   rootConnectionName?: string;
@@ -18,6 +20,7 @@ export type NodeWithPortPoints = {
 
 export type DatasetSample = NodeWithPortPoints & {
   solvable: boolean;
+  solvedRoutes: HighDensityIntraNodeRoute[];
 };
 
 export type DatasetSampleWithoutMetadata = NodeWithPortPoints;

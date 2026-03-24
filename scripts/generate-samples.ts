@@ -1,6 +1,7 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HyperSingleIntraNodeSolver } from "@tscircuit/capacity-autorouter";
+import type { HighDensityIntraNodeRoute } from "@tscircuit/high-density-a01";
 import {
   DEFAULT_SAMPLE_COUNT,
   createSampleFileName,
@@ -35,7 +36,14 @@ const parseSampleCount = (argv: string[]) => {
 
 const parseResumeFlag = (argv: string[]) => argv.includes("--resume");
 
-const evaluateSolvable = (nodeWithPortPoints: NodeWithPortPoints) => {
+type SolveEvaluation = {
+  solvable: boolean;
+  solvedRoutes: HighDensityIntraNodeRoute[];
+};
+
+const evaluateSolvable = (
+  nodeWithPortPoints: NodeWithPortPoints,
+): SolveEvaluation => {
   try {
     const solver = new HyperSingleIntraNodeSolver({
       nodeWithPortPoints,
@@ -47,13 +55,19 @@ const evaluateSolvable = (nodeWithPortPoints: NodeWithPortPoints) => {
     solver.MAX_ITERATIONS = DEFAULT_MAX_ITERATIONS;
     solver.solve();
 
-    return solver.solved;
+    return {
+      solvable: solver.solved,
+      solvedRoutes: solver.solvedRoutes ?? [],
+    };
   } catch (error) {
     console.error(
       `Failed to evaluate ${nodeWithPortPoints.capacityMeshNodeId}:`,
       error,
     );
-    return false;
+    return {
+      solvable: false,
+      solvedRoutes: [],
+    };
   }
 };
 
@@ -61,6 +75,7 @@ type SolvedNodeSearchResult = {
   attempts: number;
   nodeWithPortPoints: NodeWithPortPoints;
   solvable: boolean;
+  solvedRoutes: HighDensityIntraNodeRoute[];
 };
 
 const logAttempt = (
@@ -81,12 +96,14 @@ const findSmallestSolvableNode = (
 ): SolvedNodeSearchResult => {
   let attempts = 1;
   let currentNode = initialNode;
-  let currentSolvable = evaluateSolvable(currentNode);
+  let currentEvaluation = evaluateSolvable(currentNode);
+  let currentSolvable = currentEvaluation.solvable;
 
   logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "initial");
 
   if (currentSolvable) {
     let smallestSolvableNode = currentNode;
+    let smallestSolvedRoutes = currentEvaluation.solvedRoutes;
 
     while (true) {
       const smallerNode = scaleNodeWithPortPoints(currentNode, SHRINK_FACTOR);
@@ -95,12 +112,14 @@ const findSmallestSolvableNode = (
           attempts,
           nodeWithPortPoints: smallestSolvableNode,
           solvable: true,
+          solvedRoutes: smallestSolvedRoutes,
         };
       }
 
       currentNode = smallerNode;
       attempts += 1;
-      currentSolvable = evaluateSolvable(currentNode);
+      currentEvaluation = evaluateSolvable(currentNode);
+      currentSolvable = currentEvaluation.solvable;
 
       logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "shrink");
 
@@ -109,10 +128,12 @@ const findSmallestSolvableNode = (
           attempts,
           nodeWithPortPoints: smallestSolvableNode,
           solvable: true,
+          solvedRoutes: smallestSolvedRoutes,
         };
       }
 
       smallestSolvableNode = currentNode;
+      smallestSolvedRoutes = currentEvaluation.solvedRoutes;
     }
   }
 
@@ -123,12 +144,14 @@ const findSmallestSolvableNode = (
         attempts,
         nodeWithPortPoints: currentNode,
         solvable: false,
+        solvedRoutes: [],
       };
     }
 
     currentNode = largerNode;
     attempts += 1;
-    currentSolvable = evaluateSolvable(currentNode);
+    currentEvaluation = evaluateSolvable(currentNode);
+    currentSolvable = currentEvaluation.solvable;
 
     logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "grow");
 
@@ -137,6 +160,7 @@ const findSmallestSolvableNode = (
         attempts,
         nodeWithPortPoints: currentNode,
         solvable: true,
+        solvedRoutes: currentEvaluation.solvedRoutes,
       };
     }
   }
@@ -151,6 +175,7 @@ const writeSample = async (samplesDir: string, sampleIndex: number) => {
   const sample: DatasetSample = {
     ...solvedNodeSearch.nodeWithPortPoints,
     solvable: solvedNodeSearch.solvable,
+    solvedRoutes: solvedNodeSearch.solvedRoutes,
   };
   const samplePath = join(samplesDir, createSampleFileName(sampleIndex));
 

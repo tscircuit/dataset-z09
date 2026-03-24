@@ -1,4 +1,3 @@
-import { HyperSingleIntraNodeSolver } from "@tscircuit/capacity-autorouter";
 import type { HighDensityIntraNodeRoute } from "@tscircuit/high-density-a01";
 import type { GraphicsObject } from "graphics-debug";
 import { mergeGraphics } from "graphics-debug";
@@ -18,16 +17,6 @@ const datasetSamples = Object.entries(sampleModules)
     sample,
   }));
 
-const sampleRenderCache = new Map<string, SampleRenderData>();
-
-type SampleRenderData = {
-  graphics: GraphicsObject;
-  solvedRoutes: HighDensityIntraNodeRoute[];
-  solverError: string | null;
-  failed: boolean;
-  iterations: number;
-};
-
 const clampIndex = (value: number) =>
   Math.max(0, Math.min(value, datasetSamples.length - 1));
 
@@ -43,6 +32,9 @@ const palette = [
   "#8f2d56",
   "#6c757d",
 ];
+
+const withAlpha = (hexColor: string, alphaHex: string) =>
+  `${hexColor}${alphaHex}`;
 
 const groupPortPointsByConnection = (portPoints: PortPoint[]) => {
   const grouped = new Map<string, PortPoint[]>();
@@ -157,9 +149,9 @@ const routesToGraphicsObject = (
           { x: current.x, y: current.y },
           { x: next.x, y: next.y },
         ],
-        strokeColor: color,
+        strokeColor: current.z === 1 ? withAlpha(color, "80") : color,
         strokeWidth: route.traceThickness,
-        strokeDash: current.z === 0 ? undefined : [0.14, 0.08],
+        strokeDash: current.z === 1 ? [0.4, 0.2] : undefined,
         label: `${route.connectionName} z${current.z}`,
         layer: `route-z${current.z}`,
       });
@@ -185,53 +177,6 @@ const routesToGraphicsObject = (
   };
 };
 
-const getSampleRenderData = (
-  fileName: string,
-  sample: DatasetSample,
-): SampleRenderData => {
-  const cached = sampleRenderCache.get(fileName);
-  if (cached) return cached;
-
-  const solver = new HyperSingleIntraNodeSolver({
-    nodeWithPortPoints: {
-      capacityMeshNodeId: sample.capacityMeshNodeId,
-      center: sample.center,
-      width: sample.width,
-      height: sample.height,
-      portPoints: sample.portPoints,
-      availableZ: sample.availableZ,
-    },
-    effort: 1,
-    traceWidth: 0.1,
-    viaDiameter: 0.3,
-  });
-
-  solver.MAX_ITERATIONS = 1_000_000;
-
-  let solvedRoutes: HighDensityIntraNodeRoute[] = [];
-
-  try {
-    solver.solve();
-    solvedRoutes = solver.solvedRoutes;
-  } catch {
-    solvedRoutes = [];
-  }
-
-  const data: SampleRenderData = {
-    graphics: mergeGraphics(
-      sampleToGraphicsObject(sample),
-      routesToGraphicsObject(sample, solvedRoutes),
-    ),
-    solvedRoutes,
-    solverError: solver.error,
-    failed: solver.failed,
-    iterations: solver.iterations,
-  };
-
-  sampleRenderCache.set(fileName, data);
-  return data;
-};
-
 export default function DatasetFixturePage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [inputValue, setInputValue] = useState("0");
@@ -248,7 +193,11 @@ export default function DatasetFixturePage() {
   }
 
   const { fileName, sample } = currentEntry;
-  const renderData = getSampleRenderData(fileName, sample);
+  const solvedRoutes = sample.solvedRoutes ?? [];
+  const graphics = mergeGraphics(
+    sampleToGraphicsObject(sample),
+    routesToGraphicsObject(sample, solvedRoutes),
+  );
 
   const updateSelectedIndex = (nextIndex: number) => {
     const clampedIndex = clampIndex(nextIndex);
@@ -268,7 +217,7 @@ export default function DatasetFixturePage() {
               <h1 style={titleStyle}>Sample Graphics Viewer</h1>
               <p style={descriptionStyle}>
                 Each dataset sample is converted into a `GraphicsObject`, then
-                merged with solved routes from `HyperSingleIntraNodeSolver` and
+                merged with the solved routes embedded in that sample and
                 rendered with `graphics-debug/react`.
               </p>
             </div>
@@ -343,9 +292,7 @@ export default function DatasetFixturePage() {
               <strong>
                 {isPending
                   ? "Loading sample..."
-                  : renderData.failed
-                    ? "Solver failed"
-                    : `${renderData.solvedRoutes.length} routes solved`}
+                  : `${solvedRoutes.length} embedded routes`}
               </strong>
             </article>
 
@@ -360,18 +307,14 @@ export default function DatasetFixturePage() {
             </article>
 
             <article style={statCardStyle}>
-              <span>Iterations</span>
-              <strong>{renderData.iterations.toLocaleString()}</strong>
+              <span>Sample File</span>
+              <strong>{fileName}</strong>
             </article>
           </div>
-
-          {renderData.solverError ? (
-            <p style={errorStyle}>Solver error: {renderData.solverError}</p>
-          ) : null}
         </section>
 
         <section style={viewerCardStyle}>
-          <InteractiveGraphics graphics={renderData.graphics} height={760} />
+          <InteractiveGraphics graphics={graphics} height={760} />
         </section>
       </div>
     </div>
@@ -488,11 +431,6 @@ const viewerCardStyle: React.CSSProperties = {
   background: "rgba(255, 252, 247, 0.96)",
   border: "1px solid rgba(52, 73, 94, 0.12)",
   boxShadow: "0 24px 60px rgba(66, 52, 35, 0.12)",
-};
-
-const errorStyle: React.CSSProperties = {
-  margin: "16px 0 0",
-  color: "#a61e4d",
 };
 
 const emptyStateStyle: React.CSSProperties = {
