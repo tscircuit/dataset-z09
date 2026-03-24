@@ -1,0 +1,48 @@
+{
+  "capacityMeshNodeId": "sample-000077",
+  "center": {
+    "x": 0.00,
+    "y": 0.00
+  },
+  "width": 1.26,
+  "height": 1.09,
+  "availableZ": [
+    0.00,
+    1.00
+  ],
+  "portPoints": [
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-a",
+      "x": -0.11,
+      "y": 0.55,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-b",
+      "x": -0.24,
+      "y": -0.55,
+      "z": 0.00
+    },
+    {
+      "connectionName": "conn01",
+      "rootConnectionName": "root01",
+      "portPointId": "conn01-a",
+      "x": 0.31,
+      "y": -0.55,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn01",
+      "rootConnectionName": "root01",
+      "portPointId": "conn01-b",
+      "x": -0.47,
+      "y": -0.55,
+      "z": 0.00
+    }
+  ],
+  "solvable": true
+}

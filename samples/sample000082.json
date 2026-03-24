@@ -1,0 +1,32 @@
+{
+  "capacityMeshNodeId": "sample-000082",
+  "center": {
+    "x": 0.00,
+    "y": 0.00
+  },
+  "width": 1.64,
+  "height": 1.06,
+  "availableZ": [
+    0.00,
+    1.00
+  ],
+  "portPoints": [
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-a",
+      "x": 0.83,
+      "y": -0.45,
+      "z": 0.00
+    },
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-b",
+      "x": -0.83,
+      "y": -0.05,
+      "z": 0.00
+    }
+  ],
+  "solvable": true
+}

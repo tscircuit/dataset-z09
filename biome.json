@@ -1,5 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "files": {
+    "ignore": ["high-density-a01/**", "tscircuit-autorouter/**", "samples/**"]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
