@@ -33,6 +33,8 @@ const parseSampleCount = (argv: string[]) => {
   return parsedValue;
 };
 
+const parseResumeFlag = (argv: string[]) => argv.includes("--resume");
+
 const evaluateSolvable = (nodeWithPortPoints: NodeWithPortPoints) => {
   try {
     const solver = new HyperSingleIntraNodeSolver({
@@ -160,6 +162,9 @@ const writeSample = async (samplesDir: string, sampleIndex: number) => {
   };
 };
 
+const readExistingSample = async (samplePath: string) =>
+  (await Bun.file(samplePath).json()) as DatasetSample;
+
 const removeExtraSamples = async (samplesDir: string, sampleCount: number) => {
   const expectedFileNames = new Set(
     Array.from({ length: sampleCount }, (_, index) =>
@@ -180,27 +185,48 @@ const removeExtraSamples = async (samplesDir: string, sampleCount: number) => {
 };
 
 const main = async () => {
-  const sampleCount = parseSampleCount(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const sampleCount = parseSampleCount(argv);
+  const resume = parseResumeFlag(argv);
   const samplesDir = join(process.cwd(), "samples");
 
   await mkdir(samplesDir, { recursive: true });
-  await removeExtraSamples(samplesDir, sampleCount);
+  if (!resume) {
+    await removeExtraSamples(samplesDir, sampleCount);
+  }
+
+  const existingFiles = new Set(await readdir(samplesDir));
 
   let solvableCount = 0;
+  let skippedCount = 0;
 
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const sampleFileName = createSampleFileName(sampleIndex);
+    const samplePath = join(samplesDir, sampleFileName);
+
+    if (resume && existingFiles.has(sampleFileName)) {
+      const sample = await readExistingSample(samplePath);
+      if (sample.solvable) solvableCount += 1;
+      skippedCount += 1;
+
+      console.log(
+        `${sampleFileName} skipped existing sample solvable=${sample.solvable} routes=${sample.portPoints.length / 2} size=${sample.width.toFixed(2)}x${sample.height.toFixed(2)}`,
+      );
+      continue;
+    }
+
     const { attempts, sample } = await writeSample(samplesDir, sampleIndex);
     if (sample.solvable) solvableCount += 1;
 
     console.log(
-      `${createSampleFileName(sampleIndex)} final solvable=${sample.solvable} attempts=${attempts} routes=${sample.portPoints.length / 2} size=${sample.width.toFixed(2)}x${sample.height.toFixed(2)}`,
+      `${sampleFileName} final solvable=${sample.solvable} attempts=${attempts} routes=${sample.portPoints.length / 2} size=${sample.width.toFixed(2)}x${sample.height.toFixed(2)}`,
     );
   }
 
   console.log(
-    `Generated ${sampleCount} samples (${solvableCount} solvable, ${
+    `Processed ${sampleCount} samples (${solvableCount} solvable, ${
       sampleCount - solvableCount
-    } unsolved)`,
+    } unsolved, ${skippedCount} skipped)`,
   );
 };
 
