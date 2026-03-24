@@ -77,7 +77,7 @@
     }
   ],
   "solvable": true,
-  "solvedRoutes": [
+  "solution": [
     {
       "connectionName": "conn03",
       "traceThickness": 0.10,

@@ -1,7 +1,6 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HyperSingleIntraNodeSolver } from "@tscircuit/capacity-autorouter";
-import type { HighDensityIntraNodeRoute } from "@tscircuit/high-density-a01";
 import {
   DEFAULT_SAMPLE_COUNT,
   createSampleFileName,
@@ -9,7 +8,11 @@ import {
   scaleNodeWithPortPoints,
   stringifyWithFixedNumbers,
 } from "../lib/generator";
-import type { DatasetSample, NodeWithPortPoints } from "../lib/types";
+import type {
+  DatasetSample,
+  HighDensityIntraNodeRoute,
+  NodeWithPortPoints,
+} from "../lib/types";
 
 const DEFAULT_MAX_ITERATIONS = 250_000;
 const DEFAULT_TRACE_WIDTH = 0.1;
@@ -36,14 +39,14 @@ const parseSampleCount = (argv: string[]) => {
 
 const parseResumeFlag = (argv: string[]) => argv.includes("--resume");
 
-type SolveEvaluation = {
+type SolverEvaluation = {
+  solution: HighDensityIntraNodeRoute[] | null;
   solvable: boolean;
-  solvedRoutes: HighDensityIntraNodeRoute[];
 };
 
-const evaluateSolvable = (
+const evaluateNode = (
   nodeWithPortPoints: NodeWithPortPoints,
-): SolveEvaluation => {
+): SolverEvaluation => {
   try {
     const solver = new HyperSingleIntraNodeSolver({
       nodeWithPortPoints,
@@ -57,7 +60,9 @@ const evaluateSolvable = (
 
     return {
       solvable: solver.solved,
-      solvedRoutes: solver.solvedRoutes ?? [],
+      solution: solver.solved
+        ? (solver.solvedRoutes as HighDensityIntraNodeRoute[])
+        : null,
     };
   } catch (error) {
     console.error(
@@ -66,7 +71,7 @@ const evaluateSolvable = (
     );
     return {
       solvable: false,
-      solvedRoutes: [],
+      solution: null,
     };
   }
 };
@@ -75,7 +80,12 @@ type SolvedNodeSearchResult = {
   attempts: number;
   nodeWithPortPoints: NodeWithPortPoints;
   solvable: boolean;
-  solvedRoutes: HighDensityIntraNodeRoute[];
+  solution: HighDensityIntraNodeRoute[] | null;
+};
+
+type SampleWriteResult = {
+  attempts: number;
+  sample: DatasetSample;
 };
 
 const logAttempt = (
@@ -96,14 +106,19 @@ const findSmallestSolvableNode = (
 ): SolvedNodeSearchResult => {
   let attempts = 1;
   let currentNode = initialNode;
-  let currentEvaluation = evaluateSolvable(currentNode);
-  let currentSolvable = currentEvaluation.solvable;
+  let currentEvaluation = evaluateNode(currentNode);
 
-  logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "initial");
+  logAttempt(
+    sampleIndex,
+    attempts,
+    currentNode,
+    currentEvaluation.solvable,
+    "initial",
+  );
 
-  if (currentSolvable) {
+  if (currentEvaluation.solvable) {
     let smallestSolvableNode = currentNode;
-    let smallestSolvedRoutes = currentEvaluation.solvedRoutes;
+    let smallestSolvableSolution = currentEvaluation.solution;
 
     while (true) {
       const smallerNode = scaleNodeWithPortPoints(currentNode, SHRINK_FACTOR);
@@ -112,28 +127,33 @@ const findSmallestSolvableNode = (
           attempts,
           nodeWithPortPoints: smallestSolvableNode,
           solvable: true,
-          solvedRoutes: smallestSolvedRoutes,
+          solution: smallestSolvableSolution,
         };
       }
 
       currentNode = smallerNode;
       attempts += 1;
-      currentEvaluation = evaluateSolvable(currentNode);
-      currentSolvable = currentEvaluation.solvable;
+      currentEvaluation = evaluateNode(currentNode);
 
-      logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "shrink");
+      logAttempt(
+        sampleIndex,
+        attempts,
+        currentNode,
+        currentEvaluation.solvable,
+        "shrink",
+      );
 
-      if (!currentSolvable) {
+      if (!currentEvaluation.solvable) {
         return {
           attempts,
           nodeWithPortPoints: smallestSolvableNode,
           solvable: true,
-          solvedRoutes: smallestSolvedRoutes,
+          solution: smallestSolvableSolution,
         };
       }
 
       smallestSolvableNode = currentNode;
-      smallestSolvedRoutes = currentEvaluation.solvedRoutes;
+      smallestSolvableSolution = currentEvaluation.solution;
     }
   }
 
@@ -144,29 +164,41 @@ const findSmallestSolvableNode = (
         attempts,
         nodeWithPortPoints: currentNode,
         solvable: false,
-        solvedRoutes: [],
+        solution: null,
       };
     }
 
     currentNode = largerNode;
     attempts += 1;
-    currentEvaluation = evaluateSolvable(currentNode);
-    currentSolvable = currentEvaluation.solvable;
+    currentEvaluation = evaluateNode(currentNode);
 
-    logAttempt(sampleIndex, attempts, currentNode, currentSolvable, "grow");
+    logAttempt(
+      sampleIndex,
+      attempts,
+      currentNode,
+      currentEvaluation.solvable,
+      "grow",
+    );
 
-    if (currentSolvable) {
+    if (currentEvaluation.solvable) {
       return {
         attempts,
         nodeWithPortPoints: currentNode,
         solvable: true,
-        solvedRoutes: currentEvaluation.solvedRoutes,
+        solution: currentEvaluation.solution,
       };
     }
   }
 };
 
-const writeSample = async (samplesDir: string, sampleIndex: number) => {
+const writeSampleFile = async (samplePath: string, sample: DatasetSample) => {
+  await Bun.write(samplePath, `${stringifyWithFixedNumbers(sample)}\n`);
+};
+
+const writeGeneratedSample = async (
+  samplesDir: string,
+  sampleIndex: number,
+): Promise<SampleWriteResult> => {
   const initialNodeWithPortPoints = generateNodeWithPortPoints(sampleIndex);
   const solvedNodeSearch = findSmallestSolvableNode(
     sampleIndex,
@@ -175,11 +207,11 @@ const writeSample = async (samplesDir: string, sampleIndex: number) => {
   const sample: DatasetSample = {
     ...solvedNodeSearch.nodeWithPortPoints,
     solvable: solvedNodeSearch.solvable,
-    solvedRoutes: solvedNodeSearch.solvedRoutes,
+    solution: solvedNodeSearch.solution,
   };
   const samplePath = join(samplesDir, createSampleFileName(sampleIndex));
 
-  await Bun.write(samplePath, `${stringifyWithFixedNumbers(sample)}\n`);
+  await writeSampleFile(samplePath, sample);
 
   return {
     attempts: solvedNodeSearch.attempts,
@@ -187,8 +219,30 @@ const writeSample = async (samplesDir: string, sampleIndex: number) => {
   };
 };
 
+const backfillExistingSampleSolution = async (
+  samplePath: string,
+  sample: DatasetSample,
+): Promise<SampleWriteResult> => {
+  const { solvable, solution } = evaluateNode(sample);
+  const updatedSample: DatasetSample = {
+    ...sample,
+    solvable,
+    solution,
+  };
+
+  await writeSampleFile(samplePath, updatedSample);
+
+  return {
+    attempts: 1,
+    sample: updatedSample,
+  };
+};
+
 const readExistingSample = async (samplePath: string) =>
   (await Bun.file(samplePath).json()) as DatasetSample;
+
+const hasStoredSolution = (sample: DatasetSample) =>
+  sample.solution !== undefined;
 
 const removeExtraSamples = async (samplesDir: string, sampleCount: number) => {
   const expectedFileNames = new Set(
@@ -224,6 +278,7 @@ const main = async () => {
 
   let solvableCount = 0;
   let skippedCount = 0;
+  let backfilledCount = 0;
 
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
     const sampleFileName = createSampleFileName(sampleIndex);
@@ -231,16 +286,33 @@ const main = async () => {
 
     if (resume && existingFiles.has(sampleFileName)) {
       const sample = await readExistingSample(samplePath);
-      if (sample.solvable) solvableCount += 1;
-      skippedCount += 1;
+      if (hasStoredSolution(sample)) {
+        if (sample.solvable) solvableCount += 1;
+        skippedCount += 1;
+
+        console.log(
+          `${sampleFileName} skipped existing sample solvable=${sample.solvable} routes=${sample.portPoints.length / 2} size=${sample.width.toFixed(2)}x${sample.height.toFixed(2)}`,
+        );
+        continue;
+      }
+
+      const backfilled = await backfillExistingSampleSolution(
+        samplePath,
+        sample,
+      );
+      if (backfilled.sample.solvable) solvableCount += 1;
+      backfilledCount += 1;
 
       console.log(
-        `${sampleFileName} skipped existing sample solvable=${sample.solvable} routes=${sample.portPoints.length / 2} size=${sample.width.toFixed(2)}x${sample.height.toFixed(2)}`,
+        `${sampleFileName} backfilled solution solvable=${backfilled.sample.solvable} attempts=${backfilled.attempts} routes=${backfilled.sample.portPoints.length / 2} size=${backfilled.sample.width.toFixed(2)}x${backfilled.sample.height.toFixed(2)}`,
       );
       continue;
     }
 
-    const { attempts, sample } = await writeSample(samplesDir, sampleIndex);
+    const { attempts, sample } = await writeGeneratedSample(
+      samplesDir,
+      sampleIndex,
+    );
     if (sample.solvable) solvableCount += 1;
 
     console.log(
@@ -251,7 +323,7 @@ const main = async () => {
   console.log(
     `Processed ${sampleCount} samples (${solvableCount} solvable, ${
       sampleCount - solvableCount
-    } unsolved, ${skippedCount} skipped)`,
+    } unsolved, ${skippedCount} skipped, ${backfilledCount} backfilled)`,
   );
 };
 

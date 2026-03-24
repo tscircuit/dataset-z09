@@ -1,4 +1,9 @@
-import type { DatasetSample, NodeWithPortPoints, PortPoint } from "./types";
+import type {
+  DatasetSample,
+  HighDensityIntraNodeRoute,
+  NodeWithPortPoints,
+  PortPoint,
+} from "./types";
 
 export const DEFAULT_SAMPLE_COUNT = 100;
 export const DEFAULT_DATASET_SEED = 0x5a17_9d09;
@@ -277,11 +282,12 @@ export const generateNodeWithPortPoints = (
 export const createDatasetSample = (
   sampleIndex: number,
   solvable: boolean,
+  solution: HighDensityIntraNodeRoute[] | null,
   datasetSeed = DEFAULT_DATASET_SEED,
 ): DatasetSample => ({
   ...generateNodeWithPortPoints(sampleIndex, datasetSeed),
   solvable,
-  solvedRoutes: [],
+  solution,
 });
 
 export const scaleNodeWithPortPoints = (

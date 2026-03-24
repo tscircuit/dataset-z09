@@ -1,5 +1,3 @@
-import type { HighDensityIntraNodeRoute } from "@tscircuit/high-density-a01";
-
 export type PortPoint = {
   connectionName: string;
   rootConnectionName?: string;
@@ -18,9 +16,40 @@ export type NodeWithPortPoints = {
   availableZ?: number[];
 };
 
+export type Jumper = {
+  route_type: "jumper";
+  start: {
+    x: number;
+    y: number;
+  };
+  end: {
+    x: number;
+    y: number;
+  };
+  footprint: "0603" | "1206" | "1206x4_pair";
+};
+
+export type HighDensityIntraNodeRoute = {
+  connectionName: string;
+  rootConnectionName?: string;
+  traceThickness: number;
+  viaDiameter: number;
+  route: Array<{
+    x: number;
+    y: number;
+    z: number;
+    insideJumperPad?: boolean;
+  }>;
+  vias: Array<{
+    x: number;
+    y: number;
+  }>;
+  jumpers?: Jumper[];
+};
+
 export type DatasetSample = NodeWithPortPoints & {
   solvable: boolean;
-  solvedRoutes: HighDensityIntraNodeRoute[];
+  solution: HighDensityIntraNodeRoute[] | null;
 };
 
 export type DatasetSampleWithoutMetadata = NodeWithPortPoints;
