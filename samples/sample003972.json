@@ -1,0 +1,68 @@
+{
+  "capacityMeshNodeId": "sample-003972",
+  "center": {
+    "x": 0.00,
+    "y": 0.00
+  },
+  "width": 2.65,
+  "height": 1.00,
+  "availableZ": [
+    0.00,
+    1.00
+  ],
+  "portPoints": [
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-a",
+      "x": -1.33,
+      "y": -0.18,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-b",
+      "x": 1.33,
+      "y": 0.20,
+      "z": 0.00
+    }
+  ],
+  "solvable": true,
+  "solution": [
+    {
+      "connectionName": "conn00",
+      "route": [
+        {
+          "x": -1.33,
+          "y": -0.18,
+          "z": 1.00
+        },
+        {
+          "x": 0.00,
+          "y": 0.01,
+          "z": 1.00
+        },
+        {
+          "x": 0.00,
+          "y": 0.01,
+          "z": 0.00
+        },
+        {
+          "x": 1.33,
+          "y": 0.20,
+          "z": 0.00
+        }
+      ],
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "vias": [
+        {
+          "x": 0.00,
+          "y": 0.01
+        }
+      ],
+      "rootConnectionName": "root00"
+    }
+  ]
+}

@@ -1,0 +1,367 @@
+{
+  "capacityMeshNodeId": "sample-022530",
+  "center": {
+    "x": 0.00,
+    "y": 0.00
+  },
+  "width": 1.26,
+  "height": 1.90,
+  "availableZ": [
+    0.00,
+    1.00
+  ],
+  "portPoints": [
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-a",
+      "x": 0.43,
+      "y": 0.95,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn00",
+      "rootConnectionName": "root00",
+      "portPointId": "conn00-b",
+      "x": 0.43,
+      "y": -0.95,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn01",
+      "rootConnectionName": "root01",
+      "portPointId": "conn01-a",
+      "x": 0.62,
+      "y": 0.08,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn01",
+      "rootConnectionName": "root01",
+      "portPointId": "conn01-b",
+      "x": -0.43,
+      "y": 0.95,
+      "z": 0.00
+    },
+    {
+      "connectionName": "conn02",
+      "rootConnectionName": "root02",
+      "portPointId": "conn02-a",
+      "x": -0.62,
+      "y": -0.56,
+      "z": 0.00
+    },
+    {
+      "connectionName": "conn02",
+      "rootConnectionName": "root02",
+      "portPointId": "conn02-b",
+      "x": 0.62,
+      "y": -0.50,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn03",
+      "rootConnectionName": "root03",
+      "portPointId": "conn03-a",
+      "x": 0.62,
+      "y": 0.53,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn03",
+      "rootConnectionName": "root03",
+      "portPointId": "conn03-b",
+      "x": -0.62,
+      "y": 0.05,
+      "z": 1.00
+    },
+    {
+      "connectionName": "conn04",
+      "rootConnectionName": "root04",
+      "portPointId": "conn04-a",
+      "x": 0.62,
+      "y": 0.64,
+      "z": 0.00
+    },
+    {
+      "connectionName": "conn04",
+      "rootConnectionName": "root04",
+      "portPointId": "conn04-b",
+      "x": -0.62,
+      "y": 0.68,
+      "z": 1.00
+    }
+  ],
+  "solvable": true,
+  "solution": [
+    {
+      "connectionName": "conn00",
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "route": [
+        {
+          "x": 0.43,
+          "y": 0.95,
+          "z": 1.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.92,
+          "z": 1.00
+        },
+        {
+          "x": 0.04,
+          "y": 0.54,
+          "z": 1.00
+        },
+        {
+          "x": 0.04,
+          "y": 0.54,
+          "z": 0.00
+        },
+        {
+          "x": 0.60,
+          "y": -0.92,
+          "z": 0.00
+        },
+        {
+          "x": 0.60,
+          "y": -0.44,
+          "z": 0.00
+        },
+        {
+          "x": 0.52,
+          "y": -0.94,
+          "z": 0.00
+        },
+        {
+          "x": 0.52,
+          "y": -0.94,
+          "z": 1.00
+        },
+        {
+          "x": 0.43,
+          "y": -0.95,
+          "z": 1.00
+        }
+      ],
+      "vias": [
+        {
+          "x": 0.04,
+          "y": 0.54
+        },
+        {
+          "x": 0.52,
+          "y": -0.94
+        }
+      ],
+      "rootConnectionName": "root00"
+    },
+    {
+      "connectionName": "conn01",
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "route": [
+        {
+          "x": 0.62,
+          "y": 0.08,
+          "z": 1.00
+        },
+        {
+          "x": 0.60,
+          "y": -0.22,
+          "z": 1.00
+        },
+        {
+          "x": -0.15,
+          "y": -0.33,
+          "z": 1.00
+        },
+        {
+          "x": -0.15,
+          "y": -0.33,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.50,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.19,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.14,
+          "z": 0.00
+        },
+        {
+          "x": -0.43,
+          "y": 0.95,
+          "z": 0.00
+        }
+      ],
+      "vias": [
+        {
+          "x": -0.15,
+          "y": -0.33
+        }
+      ],
+      "rootConnectionName": "root01"
+    },
+    {
+      "connectionName": "conn02",
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "route": [
+        {
+          "x": -0.62,
+          "y": -0.56,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": -0.92,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": -0.92,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": -0.92,
+          "z": 0.00
+        },
+        {
+          "x": -0.60,
+          "y": -0.92,
+          "z": 0.00
+        },
+        {
+          "x": -0.51,
+          "y": -0.89,
+          "z": 0.00
+        },
+        {
+          "x": -0.51,
+          "y": -0.89,
+          "z": 1.00
+        },
+        {
+          "x": 0.62,
+          "y": -0.50,
+          "z": 1.00
+        }
+      ],
+      "vias": [
+        {
+          "x": -0.51,
+          "y": -0.89
+        }
+      ],
+      "rootConnectionName": "root02"
+    },
+    {
+      "connectionName": "conn03",
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "route": [
+        {
+          "x": 0.62,
+          "y": 0.53,
+          "z": 1.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.43,
+          "z": 1.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.42,
+          "z": 1.00
+        },
+        {
+          "x": 0.12,
+          "y": 0.11,
+          "z": 1.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.07,
+          "z": 1.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.09,
+          "z": 1.00
+        },
+        {
+          "x": -0.62,
+          "y": 0.05,
+          "z": 1.00
+        }
+      ],
+      "vias": [],
+      "rootConnectionName": "root03"
+    },
+    {
+      "connectionName": "conn04",
+      "traceThickness": 0.15,
+      "viaDiameter": 0.30,
+      "route": [
+        {
+          "x": 0.62,
+          "y": 0.64,
+          "z": 0.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.92,
+          "z": 0.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.92,
+          "z": 0.00
+        },
+        {
+          "x": 0.60,
+          "y": 0.92,
+          "z": 0.00
+        },
+        {
+          "x": -0.06,
+          "y": 1.04,
+          "z": 0.00
+        },
+        {
+          "x": -0.06,
+          "y": 1.04,
+          "z": 1.00
+        },
+        {
+          "x": -0.60,
+          "y": 0.92,
+          "z": 1.00
+        },
+        {
+          "x": -0.62,
+          "y": 0.68,
+          "z": 1.00
+        }
+      ],
+      "vias": [
+        {
+          "x": -0.06,
+          "y": 1.04
+        }
+      ],
+      "rootConnectionName": "root04"
+    }
+  ]
+}
