@@ -58,6 +58,21 @@ export default samples;
 `;
 };
 
+const createSamplesDeclarationFile = (sampleFileNames: string[]) => {
+  const bindings = sampleFileNames.map((fileName) => fileName.replace(".json", ""));
+
+  return `import type { DatasetSample } from "../lib/types";
+
+${bindings
+  .map((binding) => `export const ${binding}: DatasetSample;`)
+  .join("\n")}
+
+export const samples: DatasetSample[];
+
+export default samples;
+`;
+};
+
 const main = async () => {
   const samplesDir = join(process.cwd(), "samples");
   const fileNames = (await readdir(samplesDir))
@@ -72,12 +87,20 @@ const main = async () => {
 
   await writeFile(join(samplesDir, "index.js"), createSamplesModule(fileNames));
   await writeFile(
+    join(samplesDir, "index.d.ts"),
+    createSamplesDeclarationFile(fileNames),
+  );
+  await writeFile(
     join(samplesDir, "first100.js"),
     createSamplesModule(fileNames.slice(0, FIRST_100_SAMPLE_COUNT)),
   );
+  await writeFile(
+    join(samplesDir, "first100.d.ts"),
+    createSamplesDeclarationFile(fileNames.slice(0, FIRST_100_SAMPLE_COUNT)),
+  );
 
   console.log(
-    `Serialized ${fileNames.length} samples and generated index.js plus first100.js`,
+    `Serialized ${fileNames.length} samples and generated index/first100 JS plus declarations`,
   );
 };
 
