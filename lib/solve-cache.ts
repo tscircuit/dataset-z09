@@ -119,8 +119,8 @@ const comparePortPoints = (left: PortPoint, right: PortPoint) => {
   const rightAngle = normalizeAngle(Math.atan2(right.y, right.x));
 
   return (
-    compareNumbers(leftAngle, rightAngle) ||
     compareNumbers(left.z, right.z) ||
+    compareNumbers(leftAngle, rightAngle) ||
     compareNumbers(left.x, right.x) ||
     compareNumbers(left.y, right.y) ||
     compareOptionalStrings(left.portPointId, right.portPointId)

@@ -99,6 +99,67 @@ test("canonicalizeDatasetSample stabilizes pair ordering across connection renam
   );
 });
 
+test("canonicalizeDatasetSample orders pairs by z=0 sweep before z=1 sweep", () => {
+  const sample: DatasetSample = {
+    capacityMeshNodeId: "z-sweep-order",
+    center: { x: 0, y: 0 },
+    width: 4,
+    height: 4,
+    availableZ: [0, 1],
+    solvable: false,
+    solution: null,
+    portPoints: [
+      {
+        connectionName: "high",
+        portPointId: "high-a",
+        x: 2,
+        y: 0,
+        z: 1,
+      },
+      {
+        connectionName: "high",
+        portPointId: "high-b",
+        x: 0,
+        y: 2,
+        z: 1,
+      },
+      {
+        connectionName: "low",
+        portPointId: "low-a",
+        x: -2,
+        y: 0,
+        z: 0,
+      },
+      {
+        connectionName: "low",
+        portPointId: "low-b",
+        x: 0,
+        y: -2,
+        z: 0,
+      },
+    ],
+  };
+
+  const canonicalSample = canonicalizeDatasetSample(sample);
+
+  expect(canonicalSample.portPoints[0]).toMatchObject({
+    connectionName: "conn00",
+    z: 0,
+  });
+  expect(canonicalSample.portPoints[1]).toMatchObject({
+    connectionName: "conn00",
+    z: 0,
+  });
+  expect(canonicalSample.portPoints[2]).toMatchObject({
+    connectionName: "conn01",
+    z: 1,
+  });
+  expect(canonicalSample.portPoints[3]).toMatchObject({
+    connectionName: "conn01",
+    z: 1,
+  });
+});
+
 test("tryApplySolveCacheEntry reattaches cached routes to the target sample", () => {
   const sample: DatasetSample = canonicalizeDatasetSample({
     capacityMeshNodeId: "sample-cache",

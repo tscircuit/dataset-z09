@@ -36,11 +36,11 @@ const compareRawVecPointsForSweep = (
   leftPoint: RawVecPoint,
   rightPoint: RawVecPoint,
 ) => {
-  if (leftPoint.angle !== rightPoint.angle) {
-    return leftPoint.angle - rightPoint.angle;
+  if (leftPoint.z !== rightPoint.z) {
+    return leftPoint.z - rightPoint.z;
   }
 
-  return leftPoint.z - rightPoint.z;
+  return normalizeAngle(leftPoint.angle) - normalizeAngle(rightPoint.angle);
 };
 
 const compareRawVecPairsForSweep = (

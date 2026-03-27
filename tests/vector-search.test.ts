@@ -38,6 +38,32 @@ test("canonicalizeRawVecStructure reorders pairs and points by CCW sweep", () =>
   ]);
 });
 
+test("canonicalizeRawVecStructure prefers a z=0 sweep before a z=1 sweep", () => {
+  expect(
+    canonicalizeRawVecStructure([
+      1,
+      0,
+      1,
+      1,
+      1,
+      Math.PI,
+      0,
+      (3 * Math.PI) / 2,
+      0,
+    ]),
+  ).toEqual([
+    1,
+    0,
+    0,
+    1.5707963267948966,
+    0,
+    3.141592653589793,
+    1,
+    4.141592653589793,
+    1,
+  ]);
+});
+
 test("getVectorDistance is invariant to pair and point ordering", () => {
   const leftVector = [1, 1, 1, -1, 0, 2, 0, -2, 1];
   const rightVector = [1, 2.1, 0, -1.9, 1, 1.1, 1, -0.9, 0];
