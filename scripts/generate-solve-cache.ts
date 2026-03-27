@@ -26,7 +26,7 @@ const DEFAULT_POINT_PAIR_COUNT = 2;
 const SHRINK_FACTOR = 0.9;
 const FINE_SHRINK_FACTOR = 0.98;
 const GROW_FACTOR = 1.1;
-const ROLLING_WINDOW_SIZE = 100;
+const ROLLING_WINDOW_SIZE = 1000;
 
 type SolverEvaluation = {
   solverSolved: boolean;
@@ -309,7 +309,7 @@ const main = async () => {
   while (!hasPerfectRollingAccuracy(rollingResults)) {
     if (maxSamples !== null && generatedSampleCount >= maxSamples) {
       throw new Error(
-        `Stopped after ${maxSamples} generated samples before rolling100Accuracy reached 1.000`,
+        `Stopped after ${maxSamples} generated samples before rolling1000Accuracy reached 1.000`,
       );
     }
 
@@ -364,17 +364,17 @@ const main = async () => {
       rollingResults.shift();
     }
 
-    const rolling100Accuracy = computeRollingAccuracy(rollingResults);
+    const rolling1000Accuracy = computeRollingAccuracy(rollingResults);
 
     console.log(
       `cacheSize=${solveCache.entries.length
         .toString()
-        .padStart(8, " ")} rolling100Accuracy=${rolling100Accuracy.toFixed(3)}`,
+        .padStart(8, " ")} rolling1000Accuracy=${rolling1000Accuracy.toFixed(3)}`,
     );
   }
 
   console.log(
-    `Completed after ${generatedSampleCount} generated samples with rolling100Accuracy=1.000`,
+    `Completed after ${generatedSampleCount} generated samples with rolling1000Accuracy=1.000`,
   );
 };
 

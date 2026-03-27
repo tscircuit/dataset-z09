@@ -30,6 +30,12 @@ type WeightVector = {
   distWeight: number;
 };
 
+type WeightLogits = {
+  ratio: number;
+  z: number;
+  distWeight: number;
+};
+
 type DistanceComponents = {
   ratio: number;
   z: number;
@@ -150,23 +156,28 @@ const parseStringFlag = (argv: string[], flagNames: string[]) => {
   return null;
 };
 
-const projectToSimplex = (vector: number[]): number[] => {
-  const sorted = [...vector].sort((left, right) => right - left);
-  let runningSum = 0;
-  let threshold = 0;
+const logitsToWeights = (logits: WeightLogits): WeightVector => {
+  const maxLogit = Math.max(logits.ratio, logits.z, logits.distWeight);
+  const ratioExp = Math.exp(logits.ratio - maxLogit);
+  const zExp = Math.exp(logits.z - maxLogit);
+  const distExp = Math.exp(logits.distWeight - maxLogit);
+  const total = ratioExp + zExp + distExp;
 
-  for (let index = 0; index < sorted.length; index += 1) {
-    runningSum += sorted[index] ?? 0;
-    const candidateThreshold = (runningSum - 1) / (index + 1);
-    const nextValue = sorted[index + 1];
+  return {
+    ratio: ratioExp / total,
+    z: zExp / total,
+    distWeight: distExp / total,
+  };
+};
 
-    if (nextValue === undefined || nextValue <= candidateThreshold) {
-      threshold = candidateThreshold;
-      break;
-    }
-  }
+const centerLogits = (logits: WeightLogits): WeightLogits => {
+  const mean = (logits.ratio + logits.z + logits.distWeight) / 3;
 
-  return vector.map((value) => Math.max(value - threshold, 0));
+  return {
+    ratio: logits.ratio - mean,
+    z: logits.z - mean,
+    distWeight: logits.distWeight - mean,
+  };
 };
 
 const getDistanceComponents = (
@@ -468,11 +479,12 @@ const trainWeights = async (
   outputJsonPath: string | null,
   pairCount: number,
 ) => {
-  let weights: WeightVector = {
-    ratio: UNIFORM_WEIGHT,
-    z: UNIFORM_WEIGHT,
-    distWeight: UNIFORM_WEIGHT,
+  let logits: WeightLogits = {
+    ratio: 0,
+    z: 0,
+    distWeight: 0,
   };
+  let weights = logitsToWeights(logits);
   const drcCache = new Map<string, DrcCacheValue>();
   const epochHistory: EpochMetrics[] = [];
   const shuffledSamples = [...trainingSamples];
@@ -559,25 +571,34 @@ const trainWeights = async (
         batchGradient[2] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.distWeight - UNIFORM_WEIGHT),
       ];
-      const nextWeightVector = projectToSimplex([
-        weights.ratio - epochLearningRate * averagedGradient[0],
-        weights.z - epochLearningRate * averagedGradient[1],
-        weights.distWeight - epochLearningRate * averagedGradient[2],
-      ]);
-      const nextWeights = {
-        ratio: nextWeightVector[0]!,
-        z: nextWeightVector[1]!,
-        distWeight: nextWeightVector[2]!,
+
+      const gradientDotWeights =
+        weights.ratio * averagedGradient[0] +
+        weights.z * averagedGradient[1] +
+        weights.distWeight * averagedGradient[2];
+      const logitsGradient: WeightLogits = {
+        ratio: weights.ratio * (averagedGradient[0] - gradientDotWeights),
+        z: weights.z * (averagedGradient[1] - gradientDotWeights),
+        distWeight:
+          weights.distWeight * (averagedGradient[2] - gradientDotWeights),
       };
+      const nextLogits = centerLogits({
+        ratio: logits.ratio - epochLearningRate * logitsGradient.ratio,
+        z: logits.z - epochLearningRate * logitsGradient.z,
+        distWeight:
+          logits.distWeight - epochLearningRate * logitsGradient.distWeight,
+      });
+      const nextWeights = logitsToWeights(nextLogits);
       const weightDelta =
         Math.abs(nextWeights.ratio - weights.ratio) +
         Math.abs(nextWeights.z - weights.z) +
         Math.abs(nextWeights.distWeight - weights.distWeight);
 
+      logits = nextLogits;
       weights = nextWeights;
       if (weightDelta > UPDATE_EPSILON) {
         updates += 1;
-      }
+      };
     }
 
     const evaluation = evaluateWeights(
