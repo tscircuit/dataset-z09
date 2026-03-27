@@ -71,7 +71,7 @@ export default function MatchPage() {
   const hasRunInitialLookupRef = useRef(false);
 
   const lookupNearestNeighbor = useCallback(async (sample: DatasetSample) => {
-    const rawVec = sample.vecRaw ?? computeVecRaw(sample);
+    const rawVec = computeVecRaw(sample);
 
     setIsLoading(true);
     setError(null);

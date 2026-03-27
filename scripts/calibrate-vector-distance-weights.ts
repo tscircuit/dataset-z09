@@ -9,30 +9,32 @@ import {
   type SolveCacheEntry,
 } from "../lib/solve-cache";
 import type { DatasetSample } from "../lib/types";
+import { computeVecRaw } from "../lib/vec-raw";
 import { canonicalizeRawVecStructure } from "../lib/vector-search";
 
 const DEFAULT_PAIR_COUNT = 2;
-const DEFAULT_TOP_K = 16;
+const DEFAULT_TOP_K = 2;
 const DEFAULT_MAX_PROBE_RANK = 64;
-const DEFAULT_EPOCHS = 8;
+const DEFAULT_EPOCHS = 16;
 const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_LEARNING_RATE = 0.05;
 const DEFAULT_MARGIN_TEMPERATURE = 0.1;
 const WEIGHT_REGULARIZATION = 0.001;
 const UPDATE_EPSILON = 1e-9;
-const TAU = Math.PI * 2;
-const AXES = [0, 1, 2] as const;
+const UNIFORM_WEIGHT = 1 / 4;
 
-type WeightTriple = {
+type WeightVector = {
   ratio: number;
-  angle: number;
   z: number;
+  x: number;
+  y: number;
 };
 
 type DistanceComponents = {
   ratio: number;
-  angle: number;
   z: number;
+  x: number;
+  y: number;
 };
 
 type TrainingCandidate = {
@@ -61,7 +63,7 @@ type EpochMetrics = {
   avgLoss: number | null;
   drcChecksPerformed: number;
   drcChecksCached: number;
-  weights: WeightTriple;
+  weights: WeightVector;
 };
 
 type DrcCacheValue = {
@@ -136,16 +138,7 @@ const parseStringFlag = (argv: string[], flagNames: string[]) => {
   return null;
 };
 
-const normalizeAngleDelta = (delta: number) => {
-  const normalizedDelta = (delta + Math.PI) % TAU;
-  return normalizedDelta < 0
-    ? normalizedDelta + TAU - Math.PI
-    : normalizedDelta - Math.PI;
-};
-
-const projectToSimplex = (
-  vector: [number, number, number],
-): [number, number, number] => {
+const projectToSimplex = (vector: number[]): number[] => {
   const sorted = [...vector].sort((left, right) => right - left);
   let runningSum = 0;
   let threshold = 0;
@@ -161,11 +154,7 @@ const projectToSimplex = (
     }
   }
 
-  return [
-    Math.max(vector[0] - threshold, 0),
-    Math.max(vector[1] - threshold, 0),
-    Math.max(vector[2] - threshold, 0),
-  ];
+  return vector.map((value) => Math.max(value - threshold, 0));
 };
 
 const getDistanceComponents = (
@@ -182,39 +171,39 @@ const getDistanceComponents = (
   const right = canonicalizeRawVecStructure(rightVector);
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
 
-  let angle = 0;
   let z = 0;
+  let x = 0;
+  let y = 0;
 
-  for (let index = 1; index < left.length; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
+  for (let index = 1; index < left.length; index += 4) {
+    const zDelta = (left[index + 1] ?? 0) - (right[index + 1] ?? 0);
+    const xDelta = (left[index + 2] ?? 0) - (right[index + 2] ?? 0);
+    const yDelta = (left[index + 3] ?? 0) - (right[index + 3] ?? 0);
 
-    if (index % 2 === 1) {
-      const angleDelta = normalizeAngleDelta(leftValue - rightValue);
-      angle += angleDelta * angleDelta;
-    } else {
-      const zDelta = leftValue - rightValue;
-      z += zDelta * zDelta;
-    }
+    z += zDelta * zDelta;
+    x += xDelta * xDelta;
+    y += yDelta * yDelta;
   }
 
   return {
     ratio: ratioDelta * ratioDelta,
-    angle,
     z,
+    x,
+    y,
   };
 };
 
 const getWeightedDistance = (
   components: DistanceComponents,
-  weights: WeightTriple,
+  weights: WeightVector,
 ) =>
   components.ratio * weights.ratio +
-  components.angle * weights.angle +
-  components.z * weights.z;
+  components.z * weights.z +
+  components.x * weights.x +
+  components.y * weights.y;
 
-const formatWeights = (weights: WeightTriple) =>
-  `ratio=${weights.ratio.toFixed(4)} angle=${weights.angle.toFixed(4)} z=${weights.z.toFixed(4)}`;
+const formatWeights = (weights: WeightVector) =>
+  `ratio=${weights.ratio.toFixed(4)} z=${weights.z.toFixed(4)} x=${weights.x.toFixed(4)} y=${weights.y.toFixed(4)}`;
 
 const loadSolveCacheEntries = async (pairCount: number) => {
   const cachePath = join(process.cwd(), `solve-cache-${pairCount}.json`);
@@ -254,7 +243,7 @@ const getLogisticGradientScale = (margin: number, temperature: number) =>
 const createTrainingSamples = (entries: SolveCacheEntry[]) =>
   entries.map((targetEntry, targetEntryIndex) => {
     const sample = getDatasetSampleFromEntry(targetEntry);
-    const vecRaw = sample.vecRaw ?? [];
+    const vecRaw = computeVecRaw(sample);
     const candidates = getSolveCacheCandidates(sample, entries)
       .filter((candidate) => candidate.sourceEntry !== targetEntry)
       .map((candidate) => ({
@@ -275,8 +264,7 @@ const createTrainingSamples = (entries: SolveCacheEntry[]) =>
 const getDrcCacheKey = (
   targetEntryIndex: number,
   candidate: TrainingCandidate,
-) =>
-  `${targetEntryIndex}:${candidate.sourceEntryIndex}:${candidate.symmetry}`;
+) => `${targetEntryIndex}:${candidate.sourceEntryIndex}:${candidate.symmetry}`;
 
 const getCandidateVerdict = (
   trainingSample: TrainingSample,
@@ -303,7 +291,7 @@ const getCandidateVerdict = (
 
 const rankCandidates = (
   candidates: TrainingCandidate[],
-  weights: WeightTriple,
+  weights: WeightVector,
 ) =>
   [...candidates].sort(
     (left, right) =>
@@ -319,7 +307,10 @@ const getTrainingSignal = (
   drcCache: Map<string, DrcCacheValue>,
   drcStats: { performed: number; cached: number },
 ) => {
-  const topCandidates = rankedCandidates.slice(0, Math.min(topK, rankedCandidates.length));
+  const topCandidates = rankedCandidates.slice(
+    0,
+    Math.min(topK, rankedCandidates.length),
+  );
   const topVerdicts = topCandidates.map((candidate) =>
     getCandidateVerdict(trainingSample, candidate, drcCache, drcStats),
   );
@@ -339,9 +330,18 @@ const getTrainingSignal = (
   const probeLimit = Math.min(maxProbeRank, rankedCandidates.length);
   let positiveCandidate: TrainingCandidate | null = null;
 
-  for (let rankIndex = topCandidates.length; rankIndex < probeLimit; rankIndex += 1) {
+  for (
+    let rankIndex = topCandidates.length;
+    rankIndex < probeLimit;
+    rankIndex += 1
+  ) {
     const candidate = rankedCandidates[rankIndex]!;
-    const ok = getCandidateVerdict(trainingSample, candidate, drcCache, drcStats);
+    const ok = getCandidateVerdict(
+      trainingSample,
+      candidate,
+      drcCache,
+      drcStats,
+    );
     if (ok) {
       positiveCandidate = candidate;
       break;
@@ -357,40 +357,44 @@ const getTrainingSignal = (
 };
 
 const getSampleGradientAndLoss = (
-  weights: WeightTriple,
+  weights: WeightVector,
   positiveCandidate: TrainingCandidate,
   negativeCandidates: TrainingCandidate[],
   temperature: number,
 ) => {
   if (negativeCandidates.length === 0) {
     return {
-      gradient: [0, 0, 0] as [number, number, number],
+      gradient: [0, 0, 0, 0] as [number, number, number, number],
       loss: 0,
     };
   }
 
-  const gradient: [number, number, number] = [0, 0, 0];
+  const gradient: [number, number, number, number] = [0, 0, 0, 0];
   let loss = 0;
 
   const pairWeight = 1 / negativeCandidates.length;
 
   for (const negativeCandidate of negativeCandidates) {
     const difference = {
-      ratio: negativeCandidate.components.ratio - positiveCandidate.components.ratio,
-      angle: negativeCandidate.components.angle - positiveCandidate.components.angle,
+      ratio:
+        negativeCandidate.components.ratio - positiveCandidate.components.ratio,
       z: negativeCandidate.components.z - positiveCandidate.components.z,
+      x: negativeCandidate.components.x - positiveCandidate.components.x,
+      y: negativeCandidate.components.y - positiveCandidate.components.y,
     };
     const margin = getWeightedDistance(difference, {
       ratio: weights.ratio,
-      angle: weights.angle,
       z: weights.z,
+      x: weights.x,
+      y: weights.y,
     });
     const gradientScale =
       pairWeight * getLogisticGradientScale(margin, temperature);
 
     gradient[0] += gradientScale * difference.ratio;
-    gradient[1] += gradientScale * difference.angle;
-    gradient[2] += gradientScale * difference.z;
+    gradient[1] += gradientScale * difference.z;
+    gradient[2] += gradientScale * difference.x;
+    gradient[3] += gradientScale * difference.y;
     loss += pairWeight * getLogisticLoss(margin, temperature);
   }
 
@@ -407,7 +411,7 @@ const writePartialResults = async (
   topK: number,
   maxProbeRank: number,
   epochHistory: EpochMetrics[],
-  weights: WeightTriple,
+  weights: WeightVector,
 ) => {
   const payload = {
     pairCount,
@@ -433,15 +437,18 @@ const trainWeights = async (
   outputJsonPath: string | null,
   pairCount: number,
 ) => {
-  let weights: WeightTriple = {
-    ratio: 1 / 3,
-    angle: 1 / 3,
-    z: 1 / 3,
+  let weights: WeightVector = {
+    ratio: UNIFORM_WEIGHT,
+    z: UNIFORM_WEIGHT,
+    x: UNIFORM_WEIGHT,
+    y: UNIFORM_WEIGHT,
   };
   const drcCache = new Map<string, DrcCacheValue>();
   const epochHistory: EpochMetrics[] = [];
   const shuffledSamples = [...trainingSamples];
-  const random = createDeterministicRandom(getSampleSeed(pairCount, 0x5e11_7d91));
+  const random = createDeterministicRandom(
+    getSampleSeed(pairCount, 0x5e11_7d91),
+  );
 
   for (let epoch = 1; epoch <= epochs; epoch += 1) {
     shuffleInPlace(shuffledSamples, random);
@@ -456,12 +463,15 @@ const trainWeights = async (
     let firstPassRankTotal = 0;
     let firstPassRankCount = 0;
     const drcStats = { performed: 0, cached: 0 };
-    const batchGradient: [number, number, number] = [0, 0, 0];
+    const batchGradient: [number, number, number, number] = [0, 0, 0, 0];
 
     const epochLearningRate = learningRate / Math.sqrt(epoch);
 
     for (const trainingSample of epochSamples) {
-      const rankedCandidates = rankCandidates(trainingSample.candidates, weights);
+      const rankedCandidates = rankCandidates(
+        trainingSample.candidates,
+        weights,
+      );
       const signal = getTrainingSignal(
         trainingSample,
         rankedCandidates,
@@ -492,6 +502,7 @@ const trainWeights = async (
       batchGradient[0] += sampleGradient.gradient[0];
       batchGradient[1] += sampleGradient.gradient[1];
       batchGradient[2] += sampleGradient.gradient[2];
+      batchGradient[3] += sampleGradient.gradient[3];
       accumulatedLoss += sampleGradient.loss;
       lossCount += 1;
       gradientSamples += 1;
@@ -500,28 +511,33 @@ const trainWeights = async (
     let updates = 0;
 
     if (gradientSamples > 0) {
-      const averagedGradient: [number, number, number] = [
+      const averagedGradient: [number, number, number, number] = [
         batchGradient[0] / gradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.ratio - 1 / 3),
+          2 * WEIGHT_REGULARIZATION * (weights.ratio - UNIFORM_WEIGHT),
         batchGradient[1] / gradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.angle - 1 / 3),
+          2 * WEIGHT_REGULARIZATION * (weights.z - UNIFORM_WEIGHT),
         batchGradient[2] / gradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.z - 1 / 3),
+          2 * WEIGHT_REGULARIZATION * (weights.x - UNIFORM_WEIGHT),
+        batchGradient[3] / gradientSamples +
+          2 * WEIGHT_REGULARIZATION * (weights.y - UNIFORM_WEIGHT),
       ];
       const nextWeightVector = projectToSimplex([
         weights.ratio - epochLearningRate * averagedGradient[0],
-        weights.angle - epochLearningRate * averagedGradient[1],
-        weights.z - epochLearningRate * averagedGradient[2],
+        weights.z - epochLearningRate * averagedGradient[1],
+        weights.x - epochLearningRate * averagedGradient[2],
+        weights.y - epochLearningRate * averagedGradient[3],
       ]);
       const nextWeights = {
-        ratio: nextWeightVector[0],
-        angle: nextWeightVector[1],
-        z: nextWeightVector[2],
+        ratio: nextWeightVector[0]!,
+        z: nextWeightVector[1]!,
+        x: nextWeightVector[2]!,
+        y: nextWeightVector[3]!,
       };
       const weightDelta =
         Math.abs(nextWeights.ratio - weights.ratio) +
-        Math.abs(nextWeights.angle - weights.angle) +
-        Math.abs(nextWeights.z - weights.z);
+        Math.abs(nextWeights.z - weights.z) +
+        Math.abs(nextWeights.x - weights.x) +
+        Math.abs(nextWeights.y - weights.y);
 
       weights = nextWeights;
       if (weightDelta > UPDATE_EPSILON) {

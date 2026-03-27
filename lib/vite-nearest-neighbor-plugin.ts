@@ -19,7 +19,7 @@ import type {
   HighDensityIntraNodeRoute,
   NodeWithPortPoints,
 } from "./types";
-import { computeVecRaw } from "./vec-raw";
+import { VEC_RAW_VERSION, computeVecRaw } from "./vec-raw";
 import {
   type SampleRawVecIndexEntry,
   getVectorDistance,
@@ -28,6 +28,11 @@ import {
 const API_PATH = "/api/get_nearest_neighbor";
 const SOLVE_CACHE_MATCH_API_PATH = "/api/get_nearest_solve_cache_match";
 const SAMPLE_RAW_VEC_INDEX_FILE_NAME = "sample-raw-vec-index.json";
+
+type SampleRawVecIndexFile = {
+  version: number;
+  entries: SampleRawVecIndexEntry[];
+};
 
 const readRequestBody = async (request: IncomingMessage) => {
   const chunks: Uint8Array[] = [];
@@ -58,7 +63,19 @@ const loadIndexEntries = async (
 
   try {
     const rawIndex = await readFile(indexPath, "utf8");
-    return JSON.parse(rawIndex) as SampleRawVecIndexEntry[];
+    const parsedIndex = JSON.parse(rawIndex) as
+      | SampleRawVecIndexFile
+      | SampleRawVecIndexEntry[];
+
+    if (
+      !Array.isArray(parsedIndex) &&
+      parsedIndex.version === VEC_RAW_VERSION &&
+      Array.isArray(parsedIndex.entries)
+    ) {
+      return parsedIndex.entries;
+    }
+
+    throw new Error("Stale sample raw vec index");
   } catch {
     const samplesDir = join(rootDir, SIMPLIFIED_SAMPLES_DIR_NAME);
     const fileNames = (await readdir(samplesDir))
@@ -74,7 +91,7 @@ const loadIndexEntries = async (
       ) as DatasetSample;
       entries.push({
         fileName,
-        vecRaw: sample.vecRaw ?? computeVecRaw(sample),
+        vecRaw: computeVecRaw(sample),
       });
     }
 

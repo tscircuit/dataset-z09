@@ -5,7 +5,7 @@ import {
   SIMPLIFIED_SAMPLES_DIR_NAME,
 } from "../lib/sample-directories";
 import type { DatasetSample } from "../lib/types";
-import { computeVecRaw } from "../lib/vec-raw";
+import { VEC_RAW_VERSION, computeVecRaw } from "../lib/vec-raw";
 import type { SampleRawVecIndexEntry } from "../lib/vector-search";
 
 const SAMPLE_RAW_VEC_INDEX_FILE_NAME = "sample-raw-vec-index.json";
@@ -24,7 +24,7 @@ const main = async () => {
     const sample = (await Bun.file(samplePath).json()) as DatasetSample;
     entries.push({
       fileName,
-      vecRaw: sample.vecRaw ?? computeVecRaw(sample),
+      vecRaw: computeVecRaw(sample),
     });
 
     if ((index + 1) % LOG_EVERY === 0) {
@@ -32,7 +32,10 @@ const main = async () => {
     }
   }
 
-  await writeFile(outputPath, `${JSON.stringify(entries)}\n`);
+  await writeFile(
+    outputPath,
+    `${JSON.stringify({ version: VEC_RAW_VERSION, entries })}\n`,
+  );
   console.log(
     `Wrote ${entries.length} entries to ${SAMPLE_RAW_VEC_INDEX_FILE_NAME}`,
   );

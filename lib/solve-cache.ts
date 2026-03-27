@@ -114,9 +114,17 @@ const compareOptionalStrings = (left?: string, right?: string) => {
   return left.localeCompare(right);
 };
 
-const comparePortPoints = (left: PortPoint, right: PortPoint) => {
-  const leftAngle = normalizeAngle(Math.atan2(left.y, left.x));
-  const rightAngle = normalizeAngle(Math.atan2(right.y, right.x));
+const comparePortPoints = (
+  left: PortPoint,
+  right: PortPoint,
+  center: { x: number; y: number },
+) => {
+  const leftAngle = normalizeAngle(
+    Math.atan2(left.y - center.y, left.x - center.x),
+  );
+  const rightAngle = normalizeAngle(
+    Math.atan2(right.y - center.y, right.x - center.x),
+  );
 
   return (
     compareNumbers(left.z, right.z) ||
@@ -130,8 +138,10 @@ const comparePortPoints = (left: PortPoint, right: PortPoint) => {
 const comparePairs = (
   left: [PortPoint, PortPoint],
   right: [PortPoint, PortPoint],
+  center: { x: number; y: number },
 ) =>
-  comparePortPoints(left[0], right[0]) || comparePortPoints(left[1], right[1]);
+  comparePortPoints(left[0], right[0], center) ||
+  comparePortPoints(left[1], right[1], center);
 
 const clonePortPoint = (portPoint: PortPoint): PortPoint => ({
   ...portPoint,
@@ -317,7 +327,13 @@ const getCanonicalizationResult = (
         );
       }
 
-      const pair = [...portPoints].sort(comparePortPoints) as [
+      const pair = [...portPoints].sort((leftPortPoint, rightPortPoint) =>
+        comparePortPoints(
+          leftPortPoint,
+          rightPortPoint,
+          nodeWithPortPoints.center,
+        ),
+      ) as [
         PortPoint,
         PortPoint,
       ];
@@ -329,7 +345,11 @@ const getCanonicalizationResult = (
       };
     })
     .sort((left, right) => {
-      const pairComparison = comparePairs(left.pair, right.pair);
+      const pairComparison = comparePairs(
+        left.pair,
+        right.pair,
+        nodeWithPortPoints.center,
+      );
       if (pairComparison !== 0) {
         return pairComparison;
       }
@@ -488,7 +508,9 @@ export const parseSolveCacheFile = (
   if (Array.isArray(value)) {
     return {
       pointPairCount,
-      entries: value as SolveCacheEntry[],
+      entries: (value as SolveCacheEntry[]).map((entry) =>
+        createSolveCacheEntry(entry.sample, entry.solution),
+      ),
     };
   }
 
@@ -508,7 +530,9 @@ export const parseSolveCacheFile = (
 
   return {
     pointPairCount,
-    entries: solveCache.entries ?? [],
+    entries: (solveCache.entries ?? []).map((entry) =>
+      createSolveCacheEntry(entry.sample, entry.solution ?? []),
+    ),
   };
 };
 

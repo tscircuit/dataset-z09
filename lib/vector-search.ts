@@ -6,6 +6,8 @@ export type SampleRawVecIndexEntry = {
 type RawVecPoint = {
   angle: number;
   z: number;
+  x: number;
+  y: number;
 };
 
 type RawVecPair = [RawVecPoint, RawVecPoint];
@@ -15,9 +17,10 @@ const TAU = Math.PI * 2;
 const LEXICOGRAPHIC_EPSILON = 1e-9;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 1 / 3,
-  angle: 1 / 3,
-  z: 1 / 3,
+  ratio: 0.25,
+  z: 0.25,
+  x: 0.25,
+  y: 0.25,
 } as const;
 
 const normalizeAngle = (angle: number) => {
@@ -25,22 +28,26 @@ const normalizeAngle = (angle: number) => {
   return normalizedAngle < 0 ? normalizedAngle + TAU : normalizedAngle;
 };
 
-const normalizeAngleDelta = (delta: number) => {
-  const normalizedDelta = (delta + Math.PI) % TAU;
-  return normalizedDelta < 0
-    ? normalizedDelta + TAU - Math.PI
-    : normalizedDelta - Math.PI;
-};
-
 const compareRawVecPointsForSweep = (
   leftPoint: RawVecPoint,
   rightPoint: RawVecPoint,
 ) => {
+  const leftAngle = normalizeAngle(leftPoint.angle);
+  const rightAngle = normalizeAngle(rightPoint.angle);
+
   if (leftPoint.z !== rightPoint.z) {
     return leftPoint.z - rightPoint.z;
   }
 
-  return normalizeAngle(leftPoint.angle) - normalizeAngle(rightPoint.angle);
+  if (Math.abs(leftAngle - rightAngle) > LEXICOGRAPHIC_EPSILON) {
+    return leftAngle - rightAngle;
+  }
+
+  if (Math.abs(leftPoint.x - rightPoint.x) > LEXICOGRAPHIC_EPSILON) {
+    return leftPoint.x - rightPoint.x;
+  }
+
+  return leftPoint.y - rightPoint.y;
 };
 
 const compareRawVecPairsForSweep = (
@@ -59,7 +66,7 @@ const compareRawVecPairsForSweep = (
 };
 
 export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
-  if (vector.length <= 1 || (vector.length - 1) % 4 !== 0) {
+  if (vector.length <= 1 || (vector.length - 1) % 8 !== 0) {
     return [...vector];
   }
 
@@ -70,79 +77,62 @@ export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
 
   const pairs: RawVecPair[] = [];
 
-  for (let index = 1; index < vector.length; index += 4) {
+  for (let index = 1; index < vector.length; index += 8) {
     const firstAngle = vector[index];
     const firstZ = vector[index + 1];
-    const secondAngle = vector[index + 2];
-    const secondZ = vector[index + 3];
+    const firstX = vector[index + 2];
+    const firstY = vector[index + 3];
+    const secondAngle = vector[index + 4];
+    const secondZ = vector[index + 5];
+    const secondX = vector[index + 6];
+    const secondY = vector[index + 7];
 
     if (
       firstAngle === undefined ||
       firstZ === undefined ||
+      firstX === undefined ||
+      firstY === undefined ||
       secondAngle === undefined ||
-      secondZ === undefined
+      secondZ === undefined ||
+      secondX === undefined ||
+      secondY === undefined
     ) {
       return [...vector];
     }
 
     const orderedPair = [
-      { angle: firstAngle, z: firstZ },
-      { angle: secondAngle, z: secondZ },
+      {
+        angle: normalizeAngle(firstAngle),
+        z: firstZ,
+        x: firstX,
+        y: firstY,
+      },
+      {
+        angle: normalizeAngle(secondAngle),
+        z: secondZ,
+        x: secondX,
+        y: secondY,
+      },
     ].sort(compareRawVecPointsForSweep) as RawVecPair;
 
     pairs.push(orderedPair);
   }
 
-  const candidateAnchors = pairs.flatMap((pair) => [
-    pair[0].angle,
-    pair[1].angle,
-  ]);
+  pairs.sort(compareRawVecPairsForSweep);
 
-  const candidateVectors = candidateAnchors.map((anchorAngle) => {
-    const shiftedPairs = pairs
-      .map(
-        (pair) =>
-          [
-            {
-              angle: normalizeAngle(pair[0].angle - anchorAngle),
-              z: pair[0].z,
-            },
-            {
-              angle: normalizeAngle(pair[1].angle - anchorAngle),
-              z: pair[1].z,
-            },
-          ].sort(compareRawVecPointsForSweep) as RawVecPair,
-      )
-      .sort(compareRawVecPairsForSweep);
-
-    return [
-      ratio,
-      ...shiftedPairs.flatMap((pair) => [
-        pair[0].angle,
-        pair[0].z,
-        pair[1].angle,
-        pair[1].z,
-      ]),
-    ];
-  });
-
-  candidateVectors.sort((leftVector, rightVector) => {
-    const vectorLength = Math.max(leftVector.length, rightVector.length);
-
-    for (let index = 0; index < vectorLength; index += 1) {
-      const leftValue = leftVector[index] ?? 0;
-      const rightValue = rightVector[index] ?? 0;
-      const delta = leftValue - rightValue;
-
-      if (Math.abs(delta) > LEXICOGRAPHIC_EPSILON) {
-        return delta;
-      }
-    }
-
-    return 0;
-  });
-
-  return candidateVectors[0] ?? [...vector];
+  return [
+    ratio,
+    ...pairs.flatMap((pair) => [
+      pair[0].angle,
+      pair[0].z,
+      pair[0].x,
+      pair[0].y,
+      pair[1].angle,
+      pair[1].z,
+      pair[1].x,
+      pair[1].y,
+    ]),
+  ];
 };
 
 export const applyVectorWeights = (vector: number[]): number[] =>
@@ -151,14 +141,20 @@ export const applyVectorWeights = (vector: number[]): number[] =>
       return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.ratio);
     }
 
-    return (
-      value *
-      Math.sqrt(
-        index % 2 === 0
-          ? VECTOR_DISTANCE_WEIGHTS.z
-          : VECTOR_DISTANCE_WEIGHTS.angle,
-      )
-    );
+    const componentIndex = (index - 1) % 4;
+    if (componentIndex === 0) {
+      return 0;
+    }
+
+    if (componentIndex === 1) {
+      return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.z);
+    }
+
+    if (componentIndex === 2) {
+      return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.x);
+    }
+
+    return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.y);
   });
 
 export const canonicalizeVector = (vector: number[]): number[] => {
@@ -185,25 +181,31 @@ export const getVectorDistance = (
   const right = canonicalizeRawVecStructure(rightVector);
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
 
-  let angleDistance = 0;
   let zDistance = 0;
+  let xDistance = 0;
+  let yDistance = 0;
 
-  for (let index = 1; index < left.length; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
+  for (let index = 1; index < left.length; index += 4) {
+    const leftZ = left[index + 1] ?? 0;
+    const rightZ = right[index + 1] ?? 0;
+    const leftX = left[index + 2] ?? 0;
+    const rightX = right[index + 2] ?? 0;
+    const leftY = left[index + 3] ?? 0;
+    const rightY = right[index + 3] ?? 0;
 
-    if (index % 2 === 1) {
-      const angleDelta = normalizeAngleDelta(leftValue - rightValue);
-      angleDistance += angleDelta * angleDelta;
-    } else {
-      const zDelta = leftValue - rightValue;
-      zDistance += zDelta * zDelta;
-    }
+    const zDelta = leftZ - rightZ;
+    const xDelta = leftX - rightX;
+    const yDelta = leftY - rightY;
+
+    zDistance += zDelta * zDelta;
+    xDistance += xDelta * xDelta;
+    yDistance += yDelta * yDelta;
   }
 
   return Math.sqrt(
     ratioDelta * ratioDelta * VECTOR_DISTANCE_WEIGHTS.ratio +
-      angleDistance * VECTOR_DISTANCE_WEIGHTS.angle +
-      zDistance * VECTOR_DISTANCE_WEIGHTS.z,
+      zDistance * VECTOR_DISTANCE_WEIGHTS.z +
+      xDistance * VECTOR_DISTANCE_WEIGHTS.x +
+      yDistance * VECTOR_DISTANCE_WEIGHTS.y,
   );
 };
