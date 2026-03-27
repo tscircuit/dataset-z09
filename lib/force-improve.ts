@@ -83,11 +83,18 @@ export const TARGET_CLEARANCE = 0.2;
 export const CLEARANCE_FALLOFF_DISTANCE = 0.4;
 export const VIA_DIAMETER = 0.3;
 export const VIA_RADIUS = VIA_DIAMETER / 2;
+export const POINT_SEGMENT_TARGET_CLEARANCE = 0.25;
+export const POINT_SEGMENT_FALLOFF_DISTANCE = 0.5;
 export const VIA_SEGMENT_TARGET_CLEARANCE = VIA_RADIUS + 0.25;
 export const VIA_SEGMENT_FALLOFF_DISTANCE = 0.5;
+export const VIA_BORDER_EXTRA_CLEARANCE = 0.15;
+export const VIA_BORDER_TARGET_CLEARANCE =
+  VIA_SEGMENT_TARGET_CLEARANCE + VIA_BORDER_EXTRA_CLEARANCE;
+export const VIA_BORDER_FALLOFF_DISTANCE =
+  VIA_SEGMENT_FALLOFF_DISTANCE + VIA_BORDER_EXTRA_CLEARANCE;
 export const VIA_VIA_REPULSION_STRENGTH = 0.034;
 export const VIA_SEGMENT_REPULSION_STRENGTH = 0.18;
-export const POINT_SEGMENT_REPULSION_STRENGTH = 0.044;
+export const POINT_SEGMENT_REPULSION_STRENGTH = 0.06;
 export const SEGMENT_SEGMENT_REPULSION_STRENGTH =
   POINT_SEGMENT_REPULSION_STRENGTH;
 export const REPULSION_TAIL_RATIO = 0.08;
@@ -100,6 +107,7 @@ export const BORDER_REPULSION_FALLOFF = 20;
 export const SHAPE_RESTORE_STRENGTH = 0.14;
 export const PATH_SMOOTHING_STRENGTH = 0.22;
 export const CLEARANCE_PROJECTION_RATIO = 0.9;
+export const POINT_SEGMENT_CLEARANCE_PROJECTION_RATIO = 1.05;
 export const VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO = 1.35;
 export const CLEARANCE_PROJECTION_PASSES = 3;
 export const MAX_CLEARANCE_CORRECTION = 0.02;
@@ -243,11 +251,21 @@ const clampMutableRoutesToBounds = (
 };
 
 const getElementTargetClearance = (element: ForceElement) =>
-  element.kind === "via" ? VIA_SEGMENT_TARGET_CLEARANCE : TARGET_CLEARANCE;
+  element.kind === "via"
+    ? VIA_SEGMENT_TARGET_CLEARANCE
+    : POINT_SEGMENT_TARGET_CLEARANCE;
 
 const getElementFalloffDistance = (element: ForceElement) =>
   element.kind === "via"
     ? VIA_SEGMENT_FALLOFF_DISTANCE
+    : POINT_SEGMENT_FALLOFF_DISTANCE;
+
+const getBorderTargetClearance = (element: ForceElement) =>
+  element.kind === "via" ? VIA_BORDER_TARGET_CLEARANCE : TARGET_CLEARANCE;
+
+const getBorderFalloffDistance = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_BORDER_FALLOFF_DISTANCE
     : CLEARANCE_FALLOFF_DISTANCE;
 
 const getElementIntersectionBoost = (element: ForceElement) =>
@@ -263,7 +281,7 @@ const getPointSegmentRepulsionStrength = (element: ForceElement) =>
 const getProjectionRatio = (element: ForceElement) =>
   element.kind === "via"
     ? VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO
-    : CLEARANCE_PROJECTION_RATIO;
+    : POINT_SEGMENT_CLEARANCE_PROJECTION_RATIO;
 
 const getMaxCorrectionForElement = (
   element: ForceElement,
@@ -544,8 +562,8 @@ const getBorderForce = (
   }
 
   const { minX, maxX, minY, maxY } = getSampleBounds(sample);
-  const targetClearance = getElementTargetClearance(element);
-  const falloffDistance = getElementFalloffDistance(element);
+  const targetClearance = getBorderTargetClearance(element);
+  const falloffDistance = getBorderFalloffDistance(element);
   const intersectionBoost = getElementIntersectionBoost(element);
 
   return {
