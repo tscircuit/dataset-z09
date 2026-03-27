@@ -89,9 +89,8 @@ export const VIA_SEGMENT_TARGET_CLEARANCE = VIA_RADIUS + 0.25;
 export const VIA_SEGMENT_FALLOFF_DISTANCE = 0.5;
 export const VIA_BORDER_EXTRA_CLEARANCE = 0.15;
 export const VIA_BORDER_TARGET_CLEARANCE =
-  VIA_SEGMENT_TARGET_CLEARANCE + VIA_BORDER_EXTRA_CLEARANCE;
-export const VIA_BORDER_FALLOFF_DISTANCE =
-  VIA_SEGMENT_FALLOFF_DISTANCE + VIA_BORDER_EXTRA_CLEARANCE;
+  VIA_SEGMENT_TARGET_CLEARANCE + VIA_BORDER_EXTRA_CLEARANCE + 0.1;
+export const VIA_BORDER_FALLOFF_DISTANCE = VIA_BORDER_TARGET_CLEARANCE + 0.05;
 export const VIA_VIA_REPULSION_STRENGTH = 0.034;
 export const VIA_SEGMENT_REPULSION_STRENGTH = 0.18;
 export const POINT_SEGMENT_REPULSION_STRENGTH = 0.06;
@@ -104,6 +103,8 @@ export const VIA_SEGMENT_INTERSECTION_FORCE_BOOST = 12;
 export const BORDER_REPULSION_STRENGTH = 0.03;
 export const BORDER_REPULSION_TAIL_RATIO = 0.08;
 export const BORDER_REPULSION_FALLOFF = 20;
+export const VIA_BORDER_REPULSION_TAIL_RATIO = 0.015;
+export const VIA_BORDER_REPULSION_FALLOFF = 80;
 export const SHAPE_RESTORE_STRENGTH = 0.14;
 export const PATH_SMOOTHING_STRENGTH = 0.22;
 export const CLEARANCE_PROJECTION_RATIO = 0.9;
@@ -267,6 +268,16 @@ const getBorderFalloffDistance = (element: ForceElement) =>
   element.kind === "via"
     ? VIA_BORDER_FALLOFF_DISTANCE
     : CLEARANCE_FALLOFF_DISTANCE;
+
+const getBorderTailRatio = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_BORDER_REPULSION_TAIL_RATIO
+    : BORDER_REPULSION_TAIL_RATIO;
+
+const getBorderRepulsionFalloff = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_BORDER_REPULSION_FALLOFF
+    : BORDER_REPULSION_FALLOFF;
 
 const getElementIntersectionBoost = (element: ForceElement) =>
   element.kind === "via"
@@ -480,6 +491,7 @@ const getPointSegmentInteraction = (
   const separationVector = subtractVector(point, closest.point);
 
   return {
+    segmentT: closest.t,
     direction:
       getVectorMagnitude(separationVector) > POSITION_EPSILON
         ? normalizeVector(separationVector, fallbackSeed)
@@ -527,6 +539,7 @@ const distributeForceToSegmentPoints = (
   segment: SegmentObstacle,
   force: Vector,
   nodeForces: Vector[][],
+  segmentT = 0.5,
 ) => {
   const mutableRoute = mutableRoutes[segment.routeIndex];
   if (!mutableRoute) return;
@@ -535,20 +548,32 @@ const distributeForceToSegmentPoints = (
   const endNode = mutableRoute.nodes[segment.endNodeIndex];
   if (!startNode || !endNode) return;
 
-  const movableNodeIndexes = [segment.startNodeIndex, segment.endNodeIndex].filter(
-    (nodeIndex) => {
-      const node = mutableRoute.nodes[nodeIndex];
-      return node && !node.fixed;
-    },
-  );
+  const startWeight = 1 - clampUnitInterval(segmentT);
+  const endWeight = clampUnitInterval(segmentT);
+  const movableStartWeight = startNode.fixed ? 0 : startWeight;
+  const movableEndWeight = endNode.fixed ? 0 : endWeight;
+  const movableWeightTotal = movableStartWeight + movableEndWeight;
 
-  if (movableNodeIndexes.length === 0) {
+  if (movableWeightTotal <= POSITION_EPSILON) {
     return;
   }
 
-  const sharedForce = scaleVector(force, 1 / movableNodeIndexes.length);
-  for (const nodeIndex of movableNodeIndexes) {
-    addForceToNode(nodeForces, segment.routeIndex, nodeIndex, sharedForce);
+  if (!startNode.fixed && movableStartWeight > 0) {
+    addForceToNode(
+      nodeForces,
+      segment.routeIndex,
+      segment.startNodeIndex,
+      scaleVector(force, movableStartWeight / movableWeightTotal),
+    );
+  }
+
+  if (!endNode.fixed && movableEndWeight > 0) {
+    addForceToNode(
+      nodeForces,
+      segment.routeIndex,
+      segment.endNodeIndex,
+      scaleVector(force, movableEndWeight / movableWeightTotal),
+    );
   }
 };
 
@@ -564,6 +589,8 @@ const getBorderForce = (
   const { minX, maxX, minY, maxY } = getSampleBounds(sample);
   const targetClearance = getBorderTargetClearance(element);
   const falloffDistance = getBorderFalloffDistance(element);
+  const tailRatio = getBorderTailRatio(element);
+  const borderRepulsionFalloff = getBorderRepulsionFalloff(element);
   const intersectionBoost = getElementIntersectionBoost(element);
 
   return {
@@ -571,8 +598,8 @@ const getBorderForce = (
       getClearanceForceMagnitude(
         element.x - minX,
         BORDER_REPULSION_STRENGTH,
-        BORDER_REPULSION_TAIL_RATIO,
-        BORDER_REPULSION_FALLOFF,
+        tailRatio,
+        borderRepulsionFalloff,
         intersectionBoost,
         targetClearance,
         falloffDistance,
@@ -581,8 +608,8 @@ const getBorderForce = (
       getClearanceForceMagnitude(
         maxX - element.x,
         BORDER_REPULSION_STRENGTH,
-        BORDER_REPULSION_TAIL_RATIO,
-        BORDER_REPULSION_FALLOFF,
+        tailRatio,
+        borderRepulsionFalloff,
         intersectionBoost,
         targetClearance,
         falloffDistance,
@@ -592,8 +619,8 @@ const getBorderForce = (
       getClearanceForceMagnitude(
         element.y - minY,
         BORDER_REPULSION_STRENGTH,
-        BORDER_REPULSION_TAIL_RATIO,
-        BORDER_REPULSION_FALLOFF,
+        tailRatio,
+        borderRepulsionFalloff,
         intersectionBoost,
         targetClearance,
         falloffDistance,
@@ -602,8 +629,8 @@ const getBorderForce = (
       getClearanceForceMagnitude(
         maxY - element.y,
         BORDER_REPULSION_STRENGTH,
-        BORDER_REPULSION_TAIL_RATIO,
-        BORDER_REPULSION_FALLOFF,
+        tailRatio,
+        borderRepulsionFalloff,
         intersectionBoost,
         targetClearance,
         falloffDistance,
@@ -761,6 +788,7 @@ const resolveClearanceConstraints = (
           segment,
           segmentCorrection,
           nodeCorrections,
+          interaction.segmentT,
         );
       }
     }
@@ -917,6 +945,7 @@ export const runForceDirectedImprovement = (
           segment,
           segmentForce,
           nodeForces,
+          interaction.segmentT,
         );
       }
     }

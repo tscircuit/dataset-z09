@@ -79,3 +79,24 @@ test("force vectors are emitted for points and vias only", () => {
     );
   }
 });
+
+test("sample000001 bottom-left conn05 via stays in the lower half after repeated steps", () => {
+  let routes = simplifyRoutes(sample.solution ?? []);
+
+  for (let index = 0; index < 100; index += 1) {
+    routes = runForceDirectedImprovement(sample, routes, 1).routes;
+  }
+
+  const route = routes[6];
+  const via = route?.vias[3];
+
+  if (!via) {
+    throw new Error("Expected conn05 bottom-left via to exist after 100 steps");
+  }
+
+  if (via.y >= 0) {
+    throw new Error(
+      `Expected conn05 bottom-left via to stay below y=0, got ${JSON.stringify(via)}`,
+    );
+  }
+});
