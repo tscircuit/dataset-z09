@@ -31,6 +31,19 @@ export type SolveCacheEntry = {
   vecRaw: number[];
 };
 
+export const DIHEDRAL_SYMMETRIES = [
+  "identity",
+  "flipX",
+  "flipY",
+  "rotate90",
+  "rotate180",
+  "rotate270",
+  "flipDiagonal",
+  "flipAntiDiagonal",
+] as const;
+
+export type DihedralSymmetry = (typeof DIHEDRAL_SYMMETRIES)[number];
+
 export type SolveCacheFile = {
   pointPairCount: number;
   entries: SolveCacheEntry[];
@@ -39,6 +52,8 @@ export type SolveCacheFile = {
 export type SolveCacheCandidate = {
   distance: number;
   entry: SolveCacheEntry;
+  sourceEntry: SolveCacheEntry;
+  symmetry: DihedralSymmetry;
 };
 
 export type ReattachedSolveCacheHit = {
@@ -104,6 +119,136 @@ const cloneRoute = (
     end: { ...jumper.end },
   })),
 });
+
+const symmetryVariantCache = new WeakMap<
+  SolveCacheEntry,
+  Map<DihedralSymmetry, SolveCacheEntry>
+>();
+
+const symmetrySwapsAxes = (symmetry: DihedralSymmetry) =>
+  symmetry === "rotate90" ||
+  symmetry === "rotate270" ||
+  symmetry === "flipDiagonal" ||
+  symmetry === "flipAntiDiagonal";
+
+const transformRelativePoint = (
+  point: { x: number; y: number },
+  symmetry: DihedralSymmetry,
+) => {
+  switch (symmetry) {
+    case "identity":
+      return { x: point.x, y: point.y };
+    case "flipX":
+      return { x: -point.x, y: point.y };
+    case "flipY":
+      return { x: point.x, y: -point.y };
+    case "rotate90":
+      return { x: -point.y, y: point.x };
+    case "rotate180":
+      return { x: -point.x, y: -point.y };
+    case "rotate270":
+      return { x: point.y, y: -point.x };
+    case "flipDiagonal":
+      return { x: point.y, y: point.x };
+    case "flipAntiDiagonal":
+      return { x: -point.y, y: -point.x };
+  }
+};
+
+const transformPointWithSymmetry = (
+  point: { x: number; y: number },
+  center: { x: number; y: number },
+  symmetry: DihedralSymmetry,
+) => {
+  const transformedPoint = transformRelativePoint(
+    {
+      x: point.x - center.x,
+      y: point.y - center.y,
+    },
+    symmetry,
+  );
+
+  return {
+    x: roundToTwoDecimals(center.x + transformedPoint.x),
+    y: roundToTwoDecimals(center.y + transformedPoint.y),
+  };
+};
+
+const transformNodeWithPortPointsBySymmetry = (
+  nodeWithPortPoints: NodeWithPortPoints,
+  symmetry: DihedralSymmetry,
+): NodeWithPortPoints => ({
+  ...nodeWithPortPoints,
+  width: symmetrySwapsAxes(symmetry)
+    ? nodeWithPortPoints.height
+    : nodeWithPortPoints.width,
+  height: symmetrySwapsAxes(symmetry)
+    ? nodeWithPortPoints.width
+    : nodeWithPortPoints.height,
+  portPoints: nodeWithPortPoints.portPoints.map((portPoint) => ({
+    ...portPoint,
+    ...transformPointWithSymmetry(
+      portPoint,
+      nodeWithPortPoints.center,
+      symmetry,
+    ),
+  })),
+});
+
+const transformRouteBySymmetry = (
+  route: HighDensityIntraNodeRoute,
+  center: { x: number; y: number },
+  symmetry: DihedralSymmetry,
+): HighDensityIntraNodeRoute => ({
+  ...cloneRoute(route),
+  route: route.route.map((point) => ({
+    ...point,
+    ...transformPointWithSymmetry(point, center, symmetry),
+  })),
+  vias: route.vias.map((via) =>
+    transformPointWithSymmetry(via, center, symmetry),
+  ),
+  jumpers: route.jumpers?.map((jumper) => ({
+    ...jumper,
+    start: transformPointWithSymmetry(jumper.start, center, symmetry),
+    end: transformPointWithSymmetry(jumper.end, center, symmetry),
+  })),
+});
+
+const getSolveCacheEntrySymmetryVariant = (
+  entry: SolveCacheEntry,
+  symmetry: DihedralSymmetry,
+): SolveCacheEntry => {
+  if (symmetry === "identity") {
+    return entry;
+  }
+
+  const cachedVariants = symmetryVariantCache.get(entry);
+  const cachedVariant = cachedVariants?.get(symmetry);
+  if (cachedVariant) {
+    return cachedVariant;
+  }
+
+  const transformedSample = transformNodeWithPortPointsBySymmetry(
+    entry.sample,
+    symmetry,
+  );
+  const transformedSolution = entry.solution.map((route) =>
+    transformRouteBySymmetry(route, entry.sample.center, symmetry),
+  );
+  const transformedEntry = createSolveCacheEntry(
+    transformedSample,
+    transformedSolution,
+  );
+
+  if (cachedVariants) {
+    cachedVariants.set(symmetry, transformedEntry);
+  } else {
+    symmetryVariantCache.set(entry, new Map([[symmetry, transformedEntry]]));
+  }
+
+  return transformedEntry;
+};
 
 const toDatasetSample = (
   nodeWithPortPoints: NodeWithPortPoints,
@@ -345,14 +490,25 @@ export const getSolveCacheCandidates = (
   entries: SolveCacheEntry[],
 ): SolveCacheCandidate[] => {
   const vecRaw = computeVecRaw(toDatasetSample(targetSample));
+  const candidates: SolveCacheCandidate[] = [];
 
-  return entries
-    .filter((entry) => entry.vecRaw.length === vecRaw.length)
-    .map((entry) => ({
-      entry,
-      distance: getVectorDistance(vecRaw, entry.vecRaw),
-    }))
-    .sort((left, right) => left.distance - right.distance);
+  for (const sourceEntry of entries) {
+    for (const symmetry of DIHEDRAL_SYMMETRIES) {
+      const entry = getSolveCacheEntrySymmetryVariant(sourceEntry, symmetry);
+      if (entry.vecRaw.length !== vecRaw.length) {
+        continue;
+      }
+
+      candidates.push({
+        sourceEntry,
+        symmetry,
+        entry,
+        distance: getVectorDistance(vecRaw, entry.vecRaw),
+      });
+    }
+  }
+
+  return candidates.sort((left, right) => left.distance - right.distance);
 };
 
 const scalePointToTarget = (

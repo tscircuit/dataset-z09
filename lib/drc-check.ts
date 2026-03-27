@@ -16,6 +16,7 @@ type Point3D = Point2D & {
 type RouteSegment = {
   routeIndex: number;
   connectionName: string;
+  netName: string;
   segmentIndex: number;
   traceThickness: number;
   start: Point3D;
@@ -197,6 +198,11 @@ const getNodeBounds = (nodeWithPortPoints: NodeWithPortPoints) => ({
   maxY: nodeWithPortPoints.center.y + nodeWithPortPoints.height / 2,
 });
 
+const getRouteNetName = (routeLike: {
+  connectionName: string;
+  rootConnectionName?: string;
+}) => routeLike.rootConnectionName ?? routeLike.connectionName;
+
 const isPointInsideBounds = (
   point: Point2D,
   bounds: ReturnType<typeof getNodeBounds>,
@@ -260,6 +266,7 @@ const extractRouteSegments = (
       segments.push({
         routeIndex,
         connectionName: route.connectionName,
+        netName: getRouteNetName(route),
         segmentIndex,
         traceThickness: route.traceThickness,
         start,
@@ -483,6 +490,10 @@ export const runDrcCheck = (
         continue;
       }
 
+      if (leftSegment.netName === rightSegment.netName) {
+        continue;
+      }
+
       const clearance =
         leftSegment.traceThickness / 2 + rightSegment.traceThickness / 2;
       const distance = getSegmentDistance(
@@ -516,9 +527,14 @@ export const runDrcCheck = (
 
     for (const via of route.vias) {
       const viaRadius = route.viaDiameter / 2;
+      const routeNetName = getRouteNetName(route);
 
       for (const segment of segments) {
         if (isViaIncidentToSegment(via, routeIndex, segment)) {
+          continue;
+        }
+
+        if (routeNetName === segment.netName) {
           continue;
         }
 
@@ -581,6 +597,10 @@ export const runDrcCheck = (
         ) {
           const rightVia = rightRoute.vias[rightViaIndex];
           if (!rightVia) continue;
+
+          if (getRouteNetName(leftRoute) === getRouteNetName(rightRoute)) {
+            continue;
+          }
 
           const clearance =
             leftRoute.viaDiameter / 2 + rightRoute.viaDiameter / 2;

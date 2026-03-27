@@ -23,6 +23,7 @@ const DEFAULT_TRACE_WIDTH = 0.1;
 const DEFAULT_VIA_DIAMETER = 0.3;
 const DEFAULT_POINT_PAIR_COUNT = 2;
 const SHRINK_FACTOR = 0.9;
+const FINE_SHRINK_FACTOR = 0.98;
 const GROW_FACTOR = 1.1;
 const MAX_CACHE_CANDIDATES_TO_TRY = 16;
 const ROLLING_WINDOW_SIZE = 100;
@@ -146,8 +147,55 @@ const evaluateNode = (
   }
 };
 
-const isCacheableEvaluation = (evaluation: SolverEvaluation) =>
-  evaluation.validatedSolveCacheEntry !== null;
+const toSolvedNodeSearchResult = (
+  validatedSolveCacheEntry: SolveCacheEntry,
+): SolvedNodeSearchResult => ({
+  nodeWithPortPoints: validatedSolveCacheEntry.sample,
+  solvable: true,
+  solution: validatedSolveCacheEntry.solution,
+  validatedSolveCacheEntry,
+});
+
+const shrinkSolveCacheEntryUntilFailure = (
+  startingEntry: SolveCacheEntry,
+  shrinkFactor: number,
+) => {
+  let smallestSolvableEntry = startingEntry;
+
+  while (true) {
+    const smallerNodeWithPortPoints = scaleNodeWithPortPoints(
+      smallestSolvableEntry.sample,
+      shrinkFactor,
+    );
+
+    if (!smallerNodeWithPortPoints) {
+      return smallestSolvableEntry;
+    }
+
+    const smallerEvaluation = evaluateNode(smallerNodeWithPortPoints);
+    const validatedSolveCacheEntry = smallerEvaluation.validatedSolveCacheEntry;
+
+    if (!validatedSolveCacheEntry) {
+      return smallestSolvableEntry;
+    }
+
+    smallestSolvableEntry = validatedSolveCacheEntry;
+  }
+};
+
+const findSmallestValidatedSolveCacheEntry = (
+  startingEntry: SolveCacheEntry,
+) => {
+  const coarseShrinkEntry = shrinkSolveCacheEntryUntilFailure(
+    startingEntry,
+    SHRINK_FACTOR,
+  );
+
+  return shrinkSolveCacheEntryUntilFailure(
+    coarseShrinkEntry,
+    FINE_SHRINK_FACTOR,
+  );
+};
 
 const findSmallestSolvableNode = (
   initialNodeWithPortPoints: NodeWithPortPoints,
@@ -158,49 +206,9 @@ const findSmallestSolvableNode = (
     currentEvaluation.validatedSolveCacheEntry;
 
   if (initialValidatedSolveCacheEntry) {
-    let smallestSolvableEntry: SolveCacheEntry =
-      initialValidatedSolveCacheEntry;
-
-    while (true) {
-      const smallerNodeWithPortPoints = scaleNodeWithPortPoints(
-        currentNodeWithPortPoints,
-        SHRINK_FACTOR,
-      );
-
-      if (!smallerNodeWithPortPoints) {
-        return {
-          nodeWithPortPoints: smallestSolvableEntry.sample,
-          solvable: true,
-          solution: smallestSolvableEntry.solution,
-          validatedSolveCacheEntry: smallestSolvableEntry,
-        };
-      }
-
-      currentNodeWithPortPoints = smallerNodeWithPortPoints;
-      currentEvaluation = evaluateNode(currentNodeWithPortPoints);
-
-      if (!isCacheableEvaluation(currentEvaluation)) {
-        return {
-          nodeWithPortPoints: smallestSolvableEntry.sample,
-          solvable: true,
-          solution: smallestSolvableEntry.solution,
-          validatedSolveCacheEntry: smallestSolvableEntry,
-        };
-      }
-
-      const validatedSolveCacheEntry =
-        currentEvaluation.validatedSolveCacheEntry;
-      if (!validatedSolveCacheEntry) {
-        return {
-          nodeWithPortPoints: smallestSolvableEntry.sample,
-          solvable: true,
-          solution: smallestSolvableEntry.solution,
-          validatedSolveCacheEntry: smallestSolvableEntry,
-        };
-      }
-
-      smallestSolvableEntry = validatedSolveCacheEntry;
-    }
+    return toSolvedNodeSearchResult(
+      findSmallestValidatedSolveCacheEntry(initialValidatedSolveCacheEntry),
+    );
   }
 
   while (true) {
@@ -223,12 +231,9 @@ const findSmallestSolvableNode = (
     const validatedSolveCacheEntry = currentEvaluation.validatedSolveCacheEntry;
 
     if (validatedSolveCacheEntry) {
-      return {
-        nodeWithPortPoints: validatedSolveCacheEntry.sample,
-        solvable: true,
-        solution: validatedSolveCacheEntry.solution,
-        validatedSolveCacheEntry,
-      };
+      return toSolvedNodeSearchResult(
+        findSmallestValidatedSolveCacheEntry(validatedSolveCacheEntry),
+      );
     }
   }
 };

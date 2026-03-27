@@ -309,11 +309,12 @@ export const createNearestNeighborVitePlugin = (): Plugin => {
         canonicalSample,
         nearest.entry,
       );
-      const entryIndex = solveCache.entries.indexOf(nearest.entry);
+      const entryIndex = solveCache.entries.indexOf(nearest.sourceEntry);
 
       sendJson(response, 200, {
         entryIndex,
         distance: nearest.distance,
+        symmetry: nearest.symmetry,
         cacheSample: getDatasetSampleFromNode(
           nearest.entry.sample,
           nearest.entry.solution,

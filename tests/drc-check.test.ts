@@ -9,8 +9,10 @@ const createRoute = (
   connectionName: string,
   route: HighDensityIntraNodeRoute["route"],
   vias: HighDensityIntraNodeRoute["vias"] = [],
+  rootConnectionName?: string,
 ): HighDensityIntraNodeRoute => ({
   connectionName,
+  rootConnectionName,
   traceThickness: 0.1,
   viaDiameter: 0.3,
   route,
@@ -57,6 +59,59 @@ test("runDrcCheck reports via overlaps with traces", () => {
   const nodeWithPortPoints = createNodeWithPortPoints([
     { connectionName: "conn00", x: -1, y: 0, z: 0 },
     { connectionName: "conn00", x: 1, y: 0, z: 0 },
+    { connectionName: "conn01", x: 0.3, y: -1.5, z: 0 },
+    { connectionName: "conn01", x: 0.3, y: 1.5, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
+    createRoute("conn00", [
+      { x: -1, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+    ]),
+    createRoute(
+      "conn01",
+      [
+        { x: 0.3, y: -1.5, z: 0 },
+        { x: 0.3, y: 1.5, z: 0 },
+      ],
+      [{ x: 0, y: 0.05 }],
+    ),
+  ]);
+
+  expect(result.ok).toBe(false);
+  expect(result.issues.some((issue) => issue.kind === "via-trace")).toBe(true);
+});
+
+test("runDrcCheck ignores trace crossings on the same root net", () => {
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    {
+      connectionName: "conn00",
+      rootConnectionName: "root00",
+      x: -1,
+      y: 0,
+      z: 0,
+    },
+    {
+      connectionName: "conn00",
+      rootConnectionName: "root00",
+      x: 1,
+      y: 0,
+      z: 0,
+    },
+    {
+      connectionName: "conn01",
+      rootConnectionName: "root00",
+      x: 0,
+      y: -1,
+      z: 0,
+    },
+    {
+      connectionName: "conn01",
+      rootConnectionName: "root00",
+      x: 0,
+      y: 1,
+      z: 0,
+    },
   ]);
 
   const result = runDrcCheck(nodeWithPortPoints, [
@@ -66,12 +121,42 @@ test("runDrcCheck reports via overlaps with traces", () => {
         { x: -1, y: 0, z: 0 },
         { x: 1, y: 0, z: 0 },
       ],
-      [{ x: 0, y: 0.05 }],
+      [],
+      "root00",
+    ),
+    createRoute(
+      "conn01",
+      [
+        { x: 0, y: -1, z: 0 },
+        { x: 0, y: 1, z: 0 },
+      ],
+      [],
+      "root00",
     ),
   ]);
 
-  expect(result.ok).toBe(false);
-  expect(result.issues.some((issue) => issue.kind === "via-trace")).toBe(true);
+  expect(result.ok).toBe(true);
+  expect(result.issues).toHaveLength(0);
+});
+
+test("runDrcCheck accepts boundary endpoints without out-of-bounds issues", () => {
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    { connectionName: "conn00", x: -2, y: 0, z: 0 },
+    { connectionName: "conn00", x: 2, y: 0, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
+    createRoute("conn00", [
+      { x: -2, y: 0, z: 0 },
+      { x: 0, y: 0, z: 0 },
+      { x: 2, y: 0, z: 0 },
+    ]),
+  ]);
+
+  expect(result.ok).toBe(true);
+  expect(result.issues.some((issue) => issue.kind === "out-of-bounds")).toBe(
+    false,
+  );
 });
 
 test("runDrcCheck accepts separated routes", () => {

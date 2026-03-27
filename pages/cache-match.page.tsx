@@ -2,7 +2,10 @@ import { mergeGraphics } from "graphics-debug";
 import { InteractiveGraphics } from "graphics-debug/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createMatchSampleWithPairCount } from "../lib/match-sample";
-import { canonicalizeDatasetSample } from "../lib/solve-cache";
+import {
+  type DihedralSymmetry,
+  canonicalizeDatasetSample,
+} from "../lib/solve-cache";
 import type { DatasetSample, HighDensityIntraNodeRoute } from "../lib/types";
 import {
   routesToGraphicsObject,
@@ -28,6 +31,7 @@ import {
 type CacheMatchResponse = {
   entryIndex: number;
   distance: number;
+  symmetry: DihedralSymmetry;
   cacheSample: DatasetSample;
   appliedRoutes: HighDensityIntraNodeRoute[] | null;
   applyError: string | null;
@@ -148,8 +152,9 @@ export default function CacheMatchPage() {
               <h1 style={titleStyle}>Cache Match</h1>
               <p style={descriptionStyle}>
                 This page generates a canonicalized match sample, looks up the
-                nearest solve-cache entry, and applies the cached route after
-                reattachment, force improvement, and DRC validation.
+                nearest solve-cache entry across all 8 dihedral symmetries, and
+                applies the matched cache variant after reattachment, force
+                improvement, and DRC validation.
               </p>
             </div>
 
@@ -221,7 +226,7 @@ export default function CacheMatchPage() {
             </article>
 
             <article style={statCardStyle}>
-              <span>Nearest Cache Entry</span>
+              <span>Stored Cache Entry</span>
               <strong>
                 {cacheMatch ? `#${cacheMatch.entryIndex}` : "Pending"}
               </strong>
@@ -232,6 +237,11 @@ export default function CacheMatchPage() {
               <strong>
                 {cacheMatch ? cacheMatch.distance.toFixed(4) : "Pending"}
               </strong>
+            </article>
+
+            <article style={statCardStyle}>
+              <span>Matched Symmetry</span>
+              <strong>{cacheMatch?.symmetry ?? "Pending"}</strong>
             </article>
 
             <article style={statCardStyle}>
@@ -279,7 +289,7 @@ export default function CacheMatchPage() {
               <div>
                 <div style={eyebrowStyle}>Nearest Entry</div>
                 <h2 style={viewerPanelTitleStyle}>
-                  Nearest Solve Cache Sample
+                  Matched Solve Cache Variant
                 </h2>
               </div>
             </div>
