@@ -5,16 +5,22 @@ import {
   createMatchSampleWithPairCount,
 } from "../lib/match-sample";
 import {
+  VECTOR_DISTANCE_WEIGHTS,
   canonicalizeRawVecStructure,
   canonicalizeVector,
   getVectorDistance,
 } from "../lib/vector-search";
 
 test("canonicalizeVector normalizes by Euclidean magnitude", () => {
+  const weightedRatio = 3 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.ratio);
+  const weightedAngle = 4 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.angle);
+  const weightedZ = 1 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.z);
+  const magnitude = Math.hypot(weightedRatio, weightedAngle, weightedZ);
+
   expect(canonicalizeVector([3, 4, 1])).toEqual([
-    30 / Math.hypot(30, 4, 10),
-    4 / Math.hypot(30, 4, 10),
-    10 / Math.hypot(30, 4, 10),
+    weightedRatio / magnitude,
+    weightedAngle / magnitude,
+    weightedZ / magnitude,
   ]);
 });
 

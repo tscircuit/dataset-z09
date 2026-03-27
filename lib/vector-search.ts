@@ -11,14 +11,25 @@ type RawVecPoint = {
 type RawVecPair = [RawVecPoint, RawVecPoint];
 
 const VECTOR_MAGNITUDE_EPSILON = 1e-9;
-const RATIO_WEIGHT = 10;
-const Z_WEIGHT = 10;
 const TAU = Math.PI * 2;
 const LEXICOGRAPHIC_EPSILON = 1e-9;
+
+export const VECTOR_DISTANCE_WEIGHTS = {
+  ratio: 0.002,
+  angle: 0.344,
+  z: 0.654,
+} as const;
 
 const normalizeAngle = (angle: number) => {
   const normalizedAngle = angle % TAU;
   return normalizedAngle < 0 ? normalizedAngle + TAU : normalizedAngle;
+};
+
+const normalizeAngleDelta = (delta: number) => {
+  const normalizedDelta = (delta + Math.PI) % TAU;
+  return normalizedDelta < 0
+    ? normalizedDelta + TAU - Math.PI
+    : normalizedDelta - Math.PI;
 };
 
 const compareRawVecPointsForSweep = (
@@ -137,10 +148,17 @@ export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
 export const applyVectorWeights = (vector: number[]): number[] =>
   vector.map((value, index) => {
     if (index === 0) {
-      return value * RATIO_WEIGHT;
+      return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.ratio);
     }
 
-    return index % 2 === 0 ? value * Z_WEIGHT : value;
+    return (
+      value *
+      Math.sqrt(
+        index % 2 === 0
+          ? VECTOR_DISTANCE_WEIGHTS.z
+          : VECTOR_DISTANCE_WEIGHTS.angle,
+      )
+    );
   });
 
 export const canonicalizeVector = (vector: number[]): number[] => {
@@ -163,14 +181,29 @@ export const getVectorDistance = (
     return Number.POSITIVE_INFINITY;
   }
 
-  const left = canonicalizeVector(leftVector);
-  const right = canonicalizeVector(rightVector);
-  let total = 0;
+  const left = canonicalizeRawVecStructure(leftVector);
+  const right = canonicalizeRawVecStructure(rightVector);
+  const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
 
-  for (let index = 0; index < left.length; index += 1) {
-    const delta = (left[index] ?? 0) - (right[index] ?? 0);
-    total += delta * delta;
+  let angleDistance = 0;
+  let zDistance = 0;
+
+  for (let index = 1; index < left.length; index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+
+    if (index % 2 === 1) {
+      const angleDelta = normalizeAngleDelta(leftValue - rightValue);
+      angleDistance += angleDelta * angleDelta;
+    } else {
+      const zDelta = leftValue - rightValue;
+      zDistance += zDelta * zDelta;
+    }
   }
 
-  return Math.sqrt(total);
+  return Math.sqrt(
+    ratioDelta * ratioDelta * VECTOR_DISTANCE_WEIGHTS.ratio +
+      angleDistance * VECTOR_DISTANCE_WEIGHTS.angle +
+      zDistance * VECTOR_DISTANCE_WEIGHTS.z,
+  );
 };
