@@ -16,7 +16,7 @@ export const computeVecRaw = (sample: DatasetSample): number[] => {
   const vecRaw = [sample.width / sample.height];
 
   for (const portPoint of sample.portPoints) {
-    vecRaw.push(Math.atan2(portPoint.y, portPoint.x));
+    vecRaw.push(Math.atan2(portPoint.y, portPoint.x), portPoint.z);
   }
 
   return vecRaw;

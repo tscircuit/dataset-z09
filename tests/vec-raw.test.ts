@@ -42,8 +42,12 @@ test("computeVecRaw encodes aspect ratio and ordered port point angles", () => {
   expect(computeVecRaw(sample)).toEqual([
     2,
     0,
+    0,
     Math.PI / 2,
+    1,
     Math.PI,
+    0,
     -Math.PI / 2,
+    1,
   ]);
 });

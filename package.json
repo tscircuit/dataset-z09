@@ -12,6 +12,7 @@
     "simplify:samples": "bun run scripts/simplify-samples.ts",
     "serialize:samples": "bun run scripts/serialize-samples.ts",
     "write:vec-raw": "bun run scripts/write-vec-raw-to-samples.ts",
+    "write:sample-raw-vec-index": "bun run scripts/write-sample-raw-vec-index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "formatcheck": "biome check biome.json bunfig.toml cosmos.config.json package.json tsconfig.json vite.config.ts README.md lib pages scripts",
