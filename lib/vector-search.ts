@@ -17,10 +17,9 @@ const TAU = Math.PI * 2;
 const LEXICOGRAPHIC_EPSILON = 1e-9;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 0.25,
-  z: 0.25,
-  x: 0.25,
-  y: 0.25,
+  ratio: 0.0481,
+  z: 0.9013,
+  distWeight: 0.0506,
 } as const;
 
 const normalizeAngle = (angle: number) => {
@@ -150,11 +149,7 @@ export const applyVectorWeights = (vector: number[]): number[] =>
       return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.z);
     }
 
-    if (componentIndex === 2) {
-      return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.x);
-    }
-
-    return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.y);
+    return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.distWeight);
   });
 
 export const canonicalizeVector = (vector: number[]): number[] => {
@@ -182,8 +177,7 @@ export const getVectorDistance = (
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
 
   let zDistance = 0;
-  let xDistance = 0;
-  let yDistance = 0;
+  let planarDistance = 0;
 
   for (let index = 1; index < left.length; index += 4) {
     const leftZ = left[index + 1] ?? 0;
@@ -198,14 +192,12 @@ export const getVectorDistance = (
     const yDelta = leftY - rightY;
 
     zDistance += zDelta * zDelta;
-    xDistance += xDelta * xDelta;
-    yDistance += yDelta * yDelta;
+    planarDistance += xDelta * xDelta + yDelta * yDelta;
   }
 
   return Math.sqrt(
     ratioDelta * ratioDelta * VECTOR_DISTANCE_WEIGHTS.ratio +
       zDistance * VECTOR_DISTANCE_WEIGHTS.z +
-      xDistance * VECTOR_DISTANCE_WEIGHTS.x +
-      yDistance * VECTOR_DISTANCE_WEIGHTS.y,
+      planarDistance * VECTOR_DISTANCE_WEIGHTS.distWeight,
   );
 };

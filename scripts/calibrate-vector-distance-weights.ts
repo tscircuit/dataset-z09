@@ -15,26 +15,24 @@ import { canonicalizeRawVecStructure } from "../lib/vector-search";
 const DEFAULT_PAIR_COUNT = 2;
 const DEFAULT_TOP_K = 2;
 const DEFAULT_MAX_PROBE_RANK = 64;
-const DEFAULT_EPOCHS = 16;
-const DEFAULT_BATCH_SIZE = 64;
+const DEFAULT_EPOCHS = 32;
+const DEFAULT_BATCH_SIZE = 256;
 const DEFAULT_LEARNING_RATE = 0.05;
 const DEFAULT_MARGIN_TEMPERATURE = 0.1;
 const WEIGHT_REGULARIZATION = 0.001;
 const UPDATE_EPSILON = 1e-9;
-const UNIFORM_WEIGHT = 1 / 4;
+const UNIFORM_WEIGHT = 1 / 3;
 
 type WeightVector = {
   ratio: number;
   z: number;
-  x: number;
-  y: number;
+  distWeight: number;
 };
 
 type DistanceComponents = {
   ratio: number;
   z: number;
-  x: number;
-  y: number;
+  dist: number;
 };
 
 type TrainingCandidate = {
@@ -64,6 +62,15 @@ type EpochMetrics = {
   drcChecksPerformed: number;
   drcChecksCached: number;
   weights: WeightVector;
+};
+
+type EvaluationMetrics = {
+  hits: number;
+  totalSamples: number;
+  accuracy: number;
+  avgFirstPassRank: number | null;
+  drcChecksPerformed: number;
+  drcChecksCached: number;
 };
 
 type DrcCacheValue = {
@@ -172,8 +179,7 @@ const getDistanceComponents = (
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
 
   let z = 0;
-  let x = 0;
-  let y = 0;
+  let dist = 0;
 
   for (let index = 1; index < left.length; index += 4) {
     const zDelta = (left[index + 1] ?? 0) - (right[index + 1] ?? 0);
@@ -181,15 +187,13 @@ const getDistanceComponents = (
     const yDelta = (left[index + 3] ?? 0) - (right[index + 3] ?? 0);
 
     z += zDelta * zDelta;
-    x += xDelta * xDelta;
-    y += yDelta * yDelta;
+    dist += xDelta * xDelta + yDelta * yDelta;
   }
 
   return {
     ratio: ratioDelta * ratioDelta,
     z,
-    x,
-    y,
+    dist,
   };
 };
 
@@ -199,11 +203,10 @@ const getWeightedDistance = (
 ) =>
   components.ratio * weights.ratio +
   components.z * weights.z +
-  components.x * weights.x +
-  components.y * weights.y;
+  components.dist * weights.distWeight;
 
 const formatWeights = (weights: WeightVector) =>
-  `ratio=${weights.ratio.toFixed(4)} z=${weights.z.toFixed(4)} x=${weights.x.toFixed(4)} y=${weights.y.toFixed(4)}`;
+  `ratio=${weights.ratio.toFixed(4)} z=${weights.z.toFixed(4)} distWeight=${weights.distWeight.toFixed(4)}`;
 
 const loadSolveCacheEntries = async (pairCount: number) => {
   const cachePath = join(process.cwd(), `solve-cache-${pairCount}.json`);
@@ -364,12 +367,12 @@ const getSampleGradientAndLoss = (
 ) => {
   if (negativeCandidates.length === 0) {
     return {
-      gradient: [0, 0, 0, 0] as [number, number, number, number],
+      gradient: [0, 0, 0] as [number, number, number],
       loss: 0,
     };
   }
 
-  const gradient: [number, number, number, number] = [0, 0, 0, 0];
+  const gradient: [number, number, number] = [0, 0, 0];
   let loss = 0;
 
   const pairWeight = 1 / negativeCandidates.length;
@@ -379,22 +382,20 @@ const getSampleGradientAndLoss = (
       ratio:
         negativeCandidate.components.ratio - positiveCandidate.components.ratio,
       z: negativeCandidate.components.z - positiveCandidate.components.z,
-      x: negativeCandidate.components.x - positiveCandidate.components.x,
-      y: negativeCandidate.components.y - positiveCandidate.components.y,
+      dist:
+        negativeCandidate.components.dist - positiveCandidate.components.dist,
     };
     const margin = getWeightedDistance(difference, {
       ratio: weights.ratio,
       z: weights.z,
-      x: weights.x,
-      y: weights.y,
+      distWeight: weights.distWeight,
     });
     const gradientScale =
       pairWeight * getLogisticGradientScale(margin, temperature);
 
     gradient[0] += gradientScale * difference.ratio;
     gradient[1] += gradientScale * difference.z;
-    gradient[2] += gradientScale * difference.x;
-    gradient[3] += gradientScale * difference.y;
+    gradient[2] += gradientScale * difference.dist;
     loss += pairWeight * getLogisticLoss(margin, temperature);
   }
 
@@ -412,6 +413,7 @@ const writePartialResults = async (
   maxProbeRank: number,
   epochHistory: EpochMetrics[],
   weights: WeightVector,
+  finalEvaluation?: EvaluationMetrics,
 ) => {
   const payload = {
     pairCount,
@@ -420,6 +422,7 @@ const writePartialResults = async (
     maxProbeRank,
     epochHistory,
     finalWeights: weights,
+    ...(finalEvaluation === undefined ? {} : { finalEvaluation }),
     updatedAt: new Date().toISOString(),
   };
 
@@ -440,8 +443,7 @@ const trainWeights = async (
   let weights: WeightVector = {
     ratio: UNIFORM_WEIGHT,
     z: UNIFORM_WEIGHT,
-    x: UNIFORM_WEIGHT,
-    y: UNIFORM_WEIGHT,
+    distWeight: UNIFORM_WEIGHT,
   };
   const drcCache = new Map<string, DrcCacheValue>();
   const epochHistory: EpochMetrics[] = [];
@@ -452,10 +454,6 @@ const trainWeights = async (
 
   for (let epoch = 1; epoch <= epochs; epoch += 1) {
     shuffleInPlace(shuffledSamples, random);
-    const epochSamples = shuffledSamples.slice(
-      0,
-      Math.min(batchSize, shuffledSamples.length),
-    );
     let hits = 0;
     let accumulatedLoss = 0;
     let lossCount = 0;
@@ -463,94 +461,101 @@ const trainWeights = async (
     let firstPassRankTotal = 0;
     let firstPassRankCount = 0;
     const drcStats = { performed: 0, cached: 0 };
-    const batchGradient: [number, number, number, number] = [0, 0, 0, 0];
-
     const epochLearningRate = learningRate / Math.sqrt(epoch);
+    let updates = 0;
 
-    for (const trainingSample of epochSamples) {
-      const rankedCandidates = rankCandidates(
-        trainingSample.candidates,
-        weights,
+    for (
+      let batchStart = 0;
+      batchStart < shuffledSamples.length;
+      batchStart += batchSize
+    ) {
+      const epochBatch = shuffledSamples.slice(
+        batchStart,
+        Math.min(batchStart + batchSize, shuffledSamples.length),
       );
-      const signal = getTrainingSignal(
-        trainingSample,
-        rankedCandidates,
-        topK,
-        maxProbeRank,
-        drcCache,
-        drcStats,
-      );
+      const batchGradient: [number, number, number] = [0, 0, 0];
+      let batchGradientSamples = 0;
 
-      if (signal.hit) {
-        hits += 1;
-        if (signal.firstPassRank !== null) {
-          firstPassRankTotal += signal.firstPassRank;
-          firstPassRankCount += 1;
+      for (const trainingSample of epochBatch) {
+        const rankedCandidates = rankCandidates(
+          trainingSample.candidates,
+          weights,
+        );
+        const signal = getTrainingSignal(
+          trainingSample,
+          rankedCandidates,
+          topK,
+          maxProbeRank,
+          drcCache,
+          drcStats,
+        );
+
+        if (signal.hit) {
+          hits += 1;
+          if (signal.firstPassRank !== null) {
+            firstPassRankTotal += signal.firstPassRank;
+            firstPassRankCount += 1;
+          }
         }
+
+        if (!signal.positiveCandidate) {
+          continue;
+        }
+
+        const sampleGradient = getSampleGradientAndLoss(
+          weights,
+          signal.positiveCandidate,
+          signal.negativeCandidates,
+          temperature,
+        );
+        batchGradient[0] += sampleGradient.gradient[0];
+        batchGradient[1] += sampleGradient.gradient[1];
+        batchGradient[2] += sampleGradient.gradient[2];
+        accumulatedLoss += sampleGradient.loss;
+        lossCount += 1;
+        gradientSamples += 1;
+        batchGradientSamples += 1;
       }
 
-      if (!signal.positiveCandidate) {
+      if (batchGradientSamples === 0) {
         continue;
       }
 
-      const sampleGradient = getSampleGradientAndLoss(
-        weights,
-        signal.positiveCandidate,
-        signal.negativeCandidates,
-        temperature,
-      );
-      batchGradient[0] += sampleGradient.gradient[0];
-      batchGradient[1] += sampleGradient.gradient[1];
-      batchGradient[2] += sampleGradient.gradient[2];
-      batchGradient[3] += sampleGradient.gradient[3];
-      accumulatedLoss += sampleGradient.loss;
-      lossCount += 1;
-      gradientSamples += 1;
-    }
-
-    let updates = 0;
-
-    if (gradientSamples > 0) {
-      const averagedGradient: [number, number, number, number] = [
-        batchGradient[0] / gradientSamples +
+      const averagedGradient: [number, number, number] = [
+        batchGradient[0] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.ratio - UNIFORM_WEIGHT),
-        batchGradient[1] / gradientSamples +
+        batchGradient[1] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.z - UNIFORM_WEIGHT),
-        batchGradient[2] / gradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.x - UNIFORM_WEIGHT),
-        batchGradient[3] / gradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.y - UNIFORM_WEIGHT),
+        batchGradient[2] / batchGradientSamples +
+          2 * WEIGHT_REGULARIZATION * (weights.distWeight - UNIFORM_WEIGHT),
       ];
       const nextWeightVector = projectToSimplex([
         weights.ratio - epochLearningRate * averagedGradient[0],
         weights.z - epochLearningRate * averagedGradient[1],
-        weights.x - epochLearningRate * averagedGradient[2],
-        weights.y - epochLearningRate * averagedGradient[3],
+        weights.distWeight - epochLearningRate * averagedGradient[2],
       ]);
       const nextWeights = {
         ratio: nextWeightVector[0]!,
         z: nextWeightVector[1]!,
-        x: nextWeightVector[2]!,
-        y: nextWeightVector[3]!,
+        distWeight: nextWeightVector[2]!,
       };
       const weightDelta =
         Math.abs(nextWeights.ratio - weights.ratio) +
         Math.abs(nextWeights.z - weights.z) +
-        Math.abs(nextWeights.x - weights.x) +
-        Math.abs(nextWeights.y - weights.y);
+        Math.abs(nextWeights.distWeight - weights.distWeight);
 
       weights = nextWeights;
       if (weightDelta > UPDATE_EPSILON) {
-        updates = 1;
+        updates += 1;
       }
     }
 
     const metrics: EpochMetrics = {
       epoch,
       hits,
-      totalSamples: epochSamples.length,
+      totalSamples: shuffledSamples.length,
       availableSamples: trainingSamples.length,
-      accuracy: hits / epochSamples.length,
+      accuracy: hits / shuffledSamples.length,
       avgFirstPassRank:
         firstPassRankCount > 0 ? firstPassRankTotal / firstPassRankCount : null,
       updates,
@@ -598,6 +603,51 @@ const trainWeights = async (
   return {
     weights,
     epochHistory,
+  };
+};
+
+const evaluateWeights = (
+  trainingSamples: TrainingSample[],
+  weights: WeightVector,
+  topK: number,
+  maxProbeRank: number,
+): EvaluationMetrics => {
+  const drcCache = new Map<string, DrcCacheValue>();
+  const drcStats = { performed: 0, cached: 0 };
+  let hits = 0;
+  let firstPassRankTotal = 0;
+  let firstPassRankCount = 0;
+
+  for (const trainingSample of trainingSamples) {
+    const rankedCandidates = rankCandidates(trainingSample.candidates, weights);
+    const signal = getTrainingSignal(
+      trainingSample,
+      rankedCandidates,
+      topK,
+      maxProbeRank,
+      drcCache,
+      drcStats,
+    );
+
+    if (!signal.hit) {
+      continue;
+    }
+
+    hits += 1;
+    if (signal.firstPassRank !== null) {
+      firstPassRankTotal += signal.firstPassRank;
+      firstPassRankCount += 1;
+    }
+  }
+
+  return {
+    hits,
+    totalSamples: trainingSamples.length,
+    accuracy: hits / trainingSamples.length,
+    avgFirstPassRank:
+      firstPassRankCount > 0 ? firstPassRankTotal / firstPassRankCount : null,
+    drcChecksPerformed: drcStats.performed,
+    drcChecksCached: drcStats.cached,
   };
 };
 
@@ -657,14 +707,38 @@ const main = async () => {
     pairCount,
   );
 
-  const lastEpoch = epochHistory[epochHistory.length - 1];
-  console.log("");
-  console.log(`Final Weights: ${formatWeights(weights)}`);
-  if (lastEpoch) {
-    console.log(
-      `Final Accuracy: ${lastEpoch.hits}/${lastEpoch.totalSamples} (${lastEpoch.accuracy.toFixed(4)})`,
+  const finalEvaluation = evaluateWeights(
+    trainingSamples,
+    weights,
+    topK,
+    maxProbeRank,
+  );
+
+  if (outputJsonPath) {
+    await writePartialResults(
+      outputJsonPath,
+      pairCount,
+      trainingSamples.length,
+      topK,
+      maxProbeRank,
+      epochHistory,
+      weights,
+      finalEvaluation,
     );
   }
+
+  console.log("");
+  console.log(`Final Weights: ${formatWeights(weights)}`);
+  console.log(
+    `Final Accuracy: ${finalEvaluation.hits}/${finalEvaluation.totalSamples} (${finalEvaluation.accuracy.toFixed(4)})`,
+  );
+  console.log(
+    `Final AvgFirstPassRank: ${
+      finalEvaluation.avgFirstPassRank === null
+        ? "n/a"
+        : finalEvaluation.avgFirstPassRank.toFixed(2)
+    }`,
+  );
 };
 
 main().catch((error) => {
