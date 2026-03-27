@@ -50,6 +50,7 @@ export type HighDensityIntraNodeRoute = {
 export type DatasetSample = NodeWithPortPoints & {
   solvable: boolean;
   solution: HighDensityIntraNodeRoute[] | null;
+  vecRaw?: number[];
 };
 
 export type DatasetSampleWithoutMetadata = NodeWithPortPoints;
