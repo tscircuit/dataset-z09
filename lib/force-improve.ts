@@ -81,10 +81,12 @@ export type ForceImproveResult = {
   stepsCompleted: number;
 };
 
-export const TARGET_CLEARANCE = 0.1;
+export const TARGET_CLEARANCE = 0.2;
+export const CLEARANCE_FALLOFF_DISTANCE = 0.4;
 export const VIA_DIAMETER = 0.3;
 export const VIA_RADIUS = VIA_DIAMETER / 2;
-export const VIA_SEGMENT_TARGET_CLEARANCE = TARGET_CLEARANCE + VIA_RADIUS;
+export const VIA_SEGMENT_TARGET_CLEARANCE = VIA_RADIUS + 0.25;
+export const VIA_SEGMENT_FALLOFF_DISTANCE = 0.5;
 export const VIA_VIA_REPULSION_STRENGTH = 0.034;
 export const VIA_SEGMENT_REPULSION_STRENGTH = 0.18;
 export const SEGMENT_SEGMENT_REPULSION_STRENGTH = 0.044;
@@ -185,8 +187,13 @@ const getClearanceForceMagnitude = (
   falloff: number,
   intersectionBoost = INTERSECTION_FORCE_BOOST,
   targetClearance = TARGET_CLEARANCE,
+  falloffDistance = CLEARANCE_FALLOFF_DISTANCE,
 ) => {
   const clampedDistance = Math.max(distance, 0);
+  if (clampedDistance >= falloffDistance) {
+    return 0;
+  }
+
   const normalizedDistance = clampedDistance / targetClearance;
 
   if (normalizedDistance < 1) {
@@ -198,8 +205,13 @@ const getClearanceForceMagnitude = (
     );
   }
 
+  const tailSpan = Math.max(
+    falloffDistance - targetClearance,
+    POSITION_EPSILON,
+  );
+  const tailProgress = (clampedDistance - targetClearance) / tailSpan;
   const tailMagnitude =
-    strength * tailRatio * Math.exp(-(normalizedDistance - 1) * falloff);
+    strength * tailRatio * Math.exp(-tailProgress * falloff);
 
   return tailMagnitude < 1e-5 ? 0 : tailMagnitude;
 };
@@ -1023,6 +1035,7 @@ export const runForceDirectedImprovement = (
               REPULSION_FALLOFF,
               VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
               VIA_SEGMENT_TARGET_CLEARANCE,
+              VIA_SEGMENT_FALLOFF_DISTANCE,
             ) * stepDecay;
 
           if (magnitude <= 0) continue;
@@ -1062,6 +1075,7 @@ export const runForceDirectedImprovement = (
               REPULSION_FALLOFF,
               VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
               VIA_SEGMENT_TARGET_CLEARANCE,
+              VIA_SEGMENT_FALLOFF_DISTANCE,
             ) * stepDecay;
 
           if (magnitude <= 0) continue;

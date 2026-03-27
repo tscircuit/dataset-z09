@@ -57,7 +57,6 @@ const getLayerFill = (z: number) => (z === 0 ? "#fff2cc" : "#dceeff");
 
 export const sampleToGraphicsObject = (sample: DatasetSample): GraphicsObject => {
   const colorMap = getConnectionColorMap(sample);
-  const groupedConnections = groupPortPointsByConnection(sample.portPoints);
   const minX = sample.center.x - sample.width / 2;
   const maxX = sample.center.x + sample.width / 2;
   const minY = sample.center.y - sample.height / 2;
@@ -66,16 +65,6 @@ export const sampleToGraphicsObject = (sample: DatasetSample): GraphicsObject =>
   return {
     coordinateSystem: "cartesian",
     title: sample.capacityMeshNodeId,
-    lines: [...groupedConnections.entries()]
-      .filter(([, points]) => points.length === 2)
-      .map(([connectionName, points]) => ({
-        points: points.map(({ x, y }) => ({ x, y })),
-        strokeColor: `${colorMap.get(connectionName) ?? "#6c757d"}55`,
-        strokeWidth: 0.04,
-        strokeDash: [0.08, 0.08],
-        label: `${connectionName} endpoints`,
-        layer: "endpoint-guides",
-      })),
     circles: sample.portPoints.map((portPoint) => ({
       center: { x: portPoint.x, y: portPoint.y },
       radius: 0.08,
@@ -152,7 +141,7 @@ export const routesToGraphicsObject = (
       circles.push({
         center: { x: via.x, y: via.y },
         radius: route.viaDiameter / 2,
-        fill: "#ffffff",
+        fill: "rgba(255,255,255,0.5)",
         stroke: color,
         label: `${route.connectionName} via`,
         layer: "vias",
