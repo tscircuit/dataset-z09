@@ -15,9 +15,9 @@ const TAU = Math.PI * 2;
 const LEXICOGRAPHIC_EPSILON = 1e-9;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 0.002,
-  angle: 0.344,
-  z: 0.654,
+  ratio: 1 / 3,
+  angle: 1 / 3,
+  z: 1 / 3,
 } as const;
 
 const normalizeAngle = (angle: number) => {
