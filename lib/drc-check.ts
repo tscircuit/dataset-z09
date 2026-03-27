@@ -1,4 +1,8 @@
-import type { HighDensityIntraNodeRoute, NodeWithPortPoints } from "./types";
+import type {
+  HighDensityIntraNodeRoute,
+  NodeWithPortPoints,
+  PortPoint,
+} from "./types";
 
 type Point2D = {
   x: number;
@@ -283,6 +287,102 @@ const isViaIncidentToSegment = (
   (arePointsCoincident(via, segment.start) ||
     arePointsCoincident(via, segment.end));
 
+const getPortPointsByConnectionName = (
+  nodeWithPortPoints: NodeWithPortPoints,
+) => {
+  const portPointsByConnection = new Map<string, PortPoint[]>();
+
+  for (const portPoint of nodeWithPortPoints.portPoints) {
+    const existingPortPoints =
+      portPointsByConnection.get(portPoint.connectionName) ?? [];
+    existingPortPoints.push(portPoint);
+    portPointsByConnection.set(portPoint.connectionName, existingPortPoints);
+  }
+
+  return portPointsByConnection;
+};
+
+const isSamePoint3D = (left: Point3D, right: Point3D) =>
+  arePointsCoincident(left, right) && left.z === right.z;
+
+const getFirstMovedPointIndex = (route: HighDensityIntraNodeRoute) => {
+  const startPoint = route.route[0];
+  if (!startPoint) return null;
+
+  for (let pointIndex = 1; pointIndex < route.route.length; pointIndex += 1) {
+    const point = route.route[pointIndex];
+    if (!point) continue;
+
+    if (!arePointsCoincident(startPoint, point)) {
+      return pointIndex;
+    }
+  }
+
+  return null;
+};
+
+const getLastMovedPointIndex = (route: HighDensityIntraNodeRoute) => {
+  const endPoint = route.route.at(-1);
+  if (!endPoint) return null;
+
+  for (
+    let pointIndex = route.route.length - 2;
+    pointIndex >= 0;
+    pointIndex -= 1
+  ) {
+    const point = route.route[pointIndex];
+    if (!point) continue;
+
+    if (!arePointsCoincident(endPoint, point)) {
+      return pointIndex;
+    }
+  }
+
+  return null;
+};
+
+const isEndpointAttachedOnSameLayer = (
+  route: HighDensityIntraNodeRoute,
+  portPoint: PortPoint,
+  endpoint: "start" | "end",
+) => {
+  const endpointPoint =
+    endpoint === "start" ? route.route[0] : route.route.at(-1);
+  if (!endpointPoint || !isSamePoint3D(endpointPoint, portPoint)) {
+    return false;
+  }
+
+  const movedPointIndex =
+    endpoint === "start"
+      ? getFirstMovedPointIndex(route)
+      : getLastMovedPointIndex(route);
+
+  if (movedPointIndex === null) {
+    return false;
+  }
+
+  const colocatedSlice =
+    endpoint === "start"
+      ? route.route.slice(0, movedPointIndex)
+      : route.route.slice(movedPointIndex + 1);
+
+  if (colocatedSlice.some((point) => point && point.z !== portPoint.z)) {
+    return false;
+  }
+
+  const movedPoint = route.route[movedPointIndex];
+  return movedPoint?.z === portPoint.z;
+};
+
+const routeHasValidAttachedEndpoints = (
+  route: HighDensityIntraNodeRoute,
+  portPoints: [PortPoint, PortPoint],
+) =>
+  (isEndpointAttachedOnSameLayer(route, portPoints[0], "start") &&
+    isEndpointAttachedOnSameLayer(route, portPoints[1], "end")) ||
+  (isEndpointAttachedOnSameLayer(route, portPoints[1], "start") &&
+    isEndpointAttachedOnSameLayer(route, portPoints[0], "end"));
+
 export const runDrcCheck = (
   nodeWithPortPoints: NodeWithPortPoints,
   routes: HighDensityIntraNodeRoute[],
@@ -290,12 +390,49 @@ export const runDrcCheck = (
   const issues: DrcIssue[] = [];
   const bounds = getNodeBounds(nodeWithPortPoints);
   const { segments, issues: segmentIssues } = extractRouteSegments(routes);
+  const portPointsByConnection =
+    getPortPointsByConnectionName(nodeWithPortPoints);
 
   issues.push(...segmentIssues);
 
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
     const route = routes[routeIndex];
     if (!route) continue;
+
+    const routePortPoints = portPointsByConnection.get(route.connectionName);
+    if (!routePortPoints || routePortPoints.length !== 2) {
+      issues.push({
+        kind: "invalid-route",
+        routeIndex,
+        connectionName: route.connectionName,
+        message: "Route must match exactly 2 sample port points.",
+      });
+      continue;
+    }
+
+    const firstPortPoint = routePortPoints[0];
+    const secondPortPoint = routePortPoints[1];
+    if (!firstPortPoint || !secondPortPoint) {
+      issues.push({
+        kind: "invalid-route",
+        routeIndex,
+        connectionName: route.connectionName,
+        message: "Route must match exactly 2 sample port points.",
+      });
+      continue;
+    }
+
+    if (
+      !routeHasValidAttachedEndpoints(route, [firstPortPoint, secondPortPoint])
+    ) {
+      issues.push({
+        kind: "invalid-route",
+        routeIndex,
+        connectionName: route.connectionName,
+        message:
+          "Route endpoints must connect to both port points and leave/arrive on the same layer as the attached port.",
+      });
+    }
 
     for (let pointIndex = 0; pointIndex < route.route.length; pointIndex += 1) {
       const point = route.route[pointIndex];

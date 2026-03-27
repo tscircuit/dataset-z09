@@ -5,15 +5,6 @@ import type {
   NodeWithPortPoints,
 } from "../lib/types";
 
-const baseNodeWithPortPoints: NodeWithPortPoints = {
-  capacityMeshNodeId: "sample-drc",
-  center: { x: 0, y: 0 },
-  width: 4,
-  height: 4,
-  availableZ: [0, 1],
-  portPoints: [],
-};
-
 const createRoute = (
   connectionName: string,
   route: HighDensityIntraNodeRoute["route"],
@@ -26,8 +17,26 @@ const createRoute = (
   vias,
 });
 
+const createNodeWithPortPoints = (
+  portPoints: NodeWithPortPoints["portPoints"],
+): NodeWithPortPoints => ({
+  capacityMeshNodeId: "sample-drc",
+  center: { x: 0, y: 0 },
+  width: 4,
+  height: 4,
+  availableZ: [0, 1],
+  portPoints,
+});
+
 test("runDrcCheck reports same-layer trace crossings", () => {
-  const result = runDrcCheck(baseNodeWithPortPoints, [
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    { connectionName: "conn00", x: -1, y: 0, z: 0 },
+    { connectionName: "conn00", x: 1, y: 0, z: 0 },
+    { connectionName: "conn01", x: 0, y: -1, z: 0 },
+    { connectionName: "conn01", x: 0, y: 1, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
     createRoute("conn00", [
       { x: -1, y: 0, z: 0 },
       { x: 1, y: 0, z: 0 },
@@ -45,7 +54,12 @@ test("runDrcCheck reports same-layer trace crossings", () => {
 });
 
 test("runDrcCheck reports via overlaps with traces", () => {
-  const result = runDrcCheck(baseNodeWithPortPoints, [
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    { connectionName: "conn00", x: -1, y: 0, z: 0 },
+    { connectionName: "conn00", x: 1, y: 0, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
     createRoute(
       "conn00",
       [
@@ -61,7 +75,14 @@ test("runDrcCheck reports via overlaps with traces", () => {
 });
 
 test("runDrcCheck accepts separated routes", () => {
-  const result = runDrcCheck(baseNodeWithPortPoints, [
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    { connectionName: "conn00", x: -1.5, y: -1, z: 0 },
+    { connectionName: "conn00", x: -0.5, y: -1, z: 0 },
+    { connectionName: "conn01", x: 0.5, y: 1, z: 0 },
+    { connectionName: "conn01", x: 1.5, y: 1, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
     createRoute("conn00", [
       { x: -1.5, y: -1, z: 0 },
       { x: -0.5, y: -1, z: 0 },
@@ -74,4 +95,29 @@ test("runDrcCheck accepts separated routes", () => {
 
   expect(result.ok).toBe(true);
   expect(result.issues).toHaveLength(0);
+});
+
+test("runDrcCheck rejects routes that immediately switch layers at an endpoint", () => {
+  const nodeWithPortPoints = createNodeWithPortPoints([
+    { connectionName: "conn00", x: -1, y: 0, z: 0 },
+    { connectionName: "conn00", x: 1, y: 0, z: 0 },
+  ]);
+
+  const result = runDrcCheck(nodeWithPortPoints, [
+    createRoute("conn00", [
+      { x: -1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 1 },
+      { x: 1, y: 0, z: 1 },
+      { x: 1, y: 0, z: 0 },
+    ]),
+  ]);
+
+  expect(result.ok).toBe(false);
+  expect(
+    result.issues.some(
+      (issue) =>
+        issue.kind === "invalid-route" &&
+        issue.message.includes("both port points"),
+    ),
+  ).toBe(true);
 });

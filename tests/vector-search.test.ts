@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { createMatchSampleWithPairCount } from "../lib/match-sample";
+import {
+  createMatchSample,
+  createMatchSampleWithPairCount,
+} from "../lib/match-sample";
 import {
   canonicalizeRawVecStructure,
   canonicalizeVector,
@@ -46,4 +49,16 @@ test("createMatchSampleWithPairCount returns a sample with the requested number 
   expect(createMatchSampleWithPairCount(1_000_001, 4).portPoints).toHaveLength(
     8,
   );
+});
+
+test("createMatchSample keeps generated samples within a 4:1 aspect ratio", () => {
+  for (let sampleIndex = 1_000_001; sampleIndex < 1_000_101; sampleIndex += 1) {
+    const sample = createMatchSample(sampleIndex);
+    const aspectRatio = Math.max(
+      sample.width / sample.height,
+      sample.height / sample.width,
+    );
+
+    expect(aspectRatio).toBeLessThanOrEqual(4);
+  }
 });

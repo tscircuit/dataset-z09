@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   canonicalizeDatasetSample,
   createSolveCacheEntry,
+  createValidatedSolveCacheEntry,
   tryApplySolveCacheEntry,
 } from "../lib/solve-cache";
 import type { DatasetSample } from "../lib/types";
@@ -182,4 +183,77 @@ test("tryApplySolveCacheEntry reattaches cached routes to the target sample", ()
     y: firstPortPoint?.y,
     z: firstPortPoint?.z,
   });
+});
+
+test("createValidatedSolveCacheEntry rejects routes that still fail drc", () => {
+  const sample: DatasetSample = canonicalizeDatasetSample({
+    capacityMeshNodeId: "sample-invalid-cache",
+    center: { x: 0, y: 0 },
+    width: 4,
+    height: 4,
+    availableZ: [0, 1],
+    solvable: true,
+    solution: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        traceThickness: 0.1,
+        viaDiameter: 0.3,
+        route: [
+          { x: -2, y: 0, z: 0 },
+          { x: 2, y: 0, z: 0 },
+        ],
+        vias: [],
+      },
+      {
+        connectionName: "conn01",
+        rootConnectionName: "root01",
+        traceThickness: 0.1,
+        viaDiameter: 0.3,
+        route: [
+          { x: 0, y: -2, z: 0 },
+          { x: 0, y: 2, z: 0 },
+        ],
+        vias: [],
+      },
+    ],
+    portPoints: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-a",
+        x: -2,
+        y: 0,
+        z: 0,
+      },
+      {
+        connectionName: "conn01",
+        rootConnectionName: "root01",
+        portPointId: "conn01-a",
+        x: 0,
+        y: -2,
+        z: 0,
+      },
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-b",
+        x: 2,
+        y: 0,
+        z: 0,
+      },
+      {
+        connectionName: "conn01",
+        rootConnectionName: "root01",
+        portPointId: "conn01-b",
+        x: 0,
+        y: 2,
+        z: 0,
+      },
+    ],
+  });
+
+  expect(
+    createValidatedSolveCacheEntry(sample, sample.solution ?? []),
+  ).toBeNull();
 });

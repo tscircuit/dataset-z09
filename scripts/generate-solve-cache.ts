@@ -3,9 +3,10 @@ import { HyperSingleIntraNodeSolver } from "@tscircuit/capacity-autorouter";
 import { scaleNodeWithPortPoints } from "../lib/generator";
 import { createMatchSampleWithPairCount } from "../lib/match-sample";
 import {
+  type SolveCacheEntry,
   canonicalizeDatasetSample,
   createEmptySolveCache,
-  createSolveCacheEntry,
+  createValidatedSolveCacheEntry,
   getNodePointPairCount,
   getSolveCacheCandidates,
   parseSolveCacheFile,
@@ -27,45 +28,79 @@ const MAX_CACHE_CANDIDATES_TO_TRY = 16;
 const ROLLING_WINDOW_SIZE = 100;
 
 type SolverEvaluation = {
-  solvable: boolean;
+  solverSolved: boolean;
   solution: HighDensityIntraNodeRoute[] | null;
+  validatedSolveCacheEntry: SolveCacheEntry | null;
 };
 
 type SolvedNodeSearchResult = {
   nodeWithPortPoints: NodeWithPortPoints;
   solvable: boolean;
   solution: HighDensityIntraNodeRoute[] | null;
+  validatedSolveCacheEntry: SolveCacheEntry | null;
+};
+
+const getFlagValue = (
+  argv: string[],
+  flagNames: string[],
+): string | undefined => {
+  let matchedValue: string | undefined;
+
+  for (const flagName of flagNames) {
+    const flagIndex = argv.findIndex((argument) => argument === flagName);
+    if (flagIndex === -1) {
+      continue;
+    }
+
+    const rawValue = argv[flagIndex + 1];
+    if (matchedValue === undefined) {
+      matchedValue = rawValue;
+      continue;
+    }
+
+    if (rawValue !== matchedValue) {
+      throw new Error(
+        `Conflicting values provided for ${flagNames.join(", ")}: ${matchedValue} vs ${rawValue ?? "(missing)"}`,
+      );
+    }
+  }
+
+  return matchedValue;
 };
 
 const parseIntegerFlag = (
   argv: string[],
-  flagName: string,
+  flagNames: string[],
   defaultValue: number,
 ) => {
-  const flagIndex = argv.findIndex((argument) => argument === flagName);
-  if (flagIndex === -1) {
+  const rawValue = getFlagValue(argv, flagNames);
+
+  if (rawValue === undefined) {
     return defaultValue;
   }
 
-  const rawValue = argv[flagIndex + 1];
   const parsedValue = Number.parseInt(rawValue ?? "", 10);
   if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-    throw new Error(`Invalid ${flagName} value: ${rawValue ?? "(missing)"}`);
+    throw new Error(
+      `Invalid ${flagNames.join("/")} value: ${rawValue ?? "(missing)"}`,
+    );
   }
 
   return parsedValue;
 };
 
-const parseOptionalIntegerFlag = (argv: string[], flagName: string) => {
-  const flagIndex = argv.findIndex((argument) => argument === flagName);
-  if (flagIndex === -1) {
+const parseOptionalIntegerFlag = (argv: string[], flagNames: string[]) => {
+  const rawValue = getFlagValue(argv, flagNames);
+
+  if (rawValue === undefined) {
     return null;
   }
 
-  const rawValue = argv[flagIndex + 1];
   const parsedValue = Number.parseInt(rawValue ?? "", 10);
   if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-    throw new Error(`Invalid ${flagName} value: ${rawValue ?? "(missing)"}`);
+    throw new Error(
+      `Invalid ${flagNames.join("/")} value: ${rawValue ?? "(missing)"}`,
+    );
   }
 
   return parsedValue;
@@ -85,11 +120,18 @@ const evaluateNode = (
     solver.MAX_ITERATIONS = DEFAULT_MAX_ITERATIONS;
     solver.solve();
 
+    const solution = solver.solved
+      ? (solver.solvedRoutes as HighDensityIntraNodeRoute[])
+      : null;
+    const validatedSolveCacheEntry =
+      solution === null
+        ? null
+        : createValidatedSolveCacheEntry(nodeWithPortPoints, solution);
+
     return {
-      solvable: solver.solved,
-      solution: solver.solved
-        ? (solver.solvedRoutes as HighDensityIntraNodeRoute[])
-        : null,
+      solverSolved: solver.solved,
+      solution,
+      validatedSolveCacheEntry,
     };
   } catch (error) {
     console.error(
@@ -97,21 +139,27 @@ const evaluateNode = (
       error,
     );
     return {
-      solvable: false,
+      solverSolved: false,
       solution: null,
+      validatedSolveCacheEntry: null,
     };
   }
 };
+
+const isCacheableEvaluation = (evaluation: SolverEvaluation) =>
+  evaluation.validatedSolveCacheEntry !== null;
 
 const findSmallestSolvableNode = (
   initialNodeWithPortPoints: NodeWithPortPoints,
 ): SolvedNodeSearchResult => {
   let currentNodeWithPortPoints = initialNodeWithPortPoints;
   let currentEvaluation = evaluateNode(currentNodeWithPortPoints);
+  const initialValidatedSolveCacheEntry =
+    currentEvaluation.validatedSolveCacheEntry;
 
-  if (currentEvaluation.solvable) {
-    let smallestSolvableNode = currentNodeWithPortPoints;
-    let smallestSolvableSolution = currentEvaluation.solution;
+  if (initialValidatedSolveCacheEntry) {
+    let smallestSolvableEntry: SolveCacheEntry =
+      initialValidatedSolveCacheEntry;
 
     while (true) {
       const smallerNodeWithPortPoints = scaleNodeWithPortPoints(
@@ -121,25 +169,37 @@ const findSmallestSolvableNode = (
 
       if (!smallerNodeWithPortPoints) {
         return {
-          nodeWithPortPoints: smallestSolvableNode,
+          nodeWithPortPoints: smallestSolvableEntry.sample,
           solvable: true,
-          solution: smallestSolvableSolution,
+          solution: smallestSolvableEntry.solution,
+          validatedSolveCacheEntry: smallestSolvableEntry,
         };
       }
 
       currentNodeWithPortPoints = smallerNodeWithPortPoints;
       currentEvaluation = evaluateNode(currentNodeWithPortPoints);
 
-      if (!currentEvaluation.solvable) {
+      if (!isCacheableEvaluation(currentEvaluation)) {
         return {
-          nodeWithPortPoints: smallestSolvableNode,
+          nodeWithPortPoints: smallestSolvableEntry.sample,
           solvable: true,
-          solution: smallestSolvableSolution,
+          solution: smallestSolvableEntry.solution,
+          validatedSolveCacheEntry: smallestSolvableEntry,
         };
       }
 
-      smallestSolvableNode = currentNodeWithPortPoints;
-      smallestSolvableSolution = currentEvaluation.solution;
+      const validatedSolveCacheEntry =
+        currentEvaluation.validatedSolveCacheEntry;
+      if (!validatedSolveCacheEntry) {
+        return {
+          nodeWithPortPoints: smallestSolvableEntry.sample,
+          solvable: true,
+          solution: smallestSolvableEntry.solution,
+          validatedSolveCacheEntry: smallestSolvableEntry,
+        };
+      }
+
+      smallestSolvableEntry = validatedSolveCacheEntry;
     }
   }
 
@@ -154,17 +214,20 @@ const findSmallestSolvableNode = (
         nodeWithPortPoints: currentNodeWithPortPoints,
         solvable: false,
         solution: null,
+        validatedSolveCacheEntry: null,
       };
     }
 
     currentNodeWithPortPoints = largerNodeWithPortPoints;
     currentEvaluation = evaluateNode(currentNodeWithPortPoints);
+    const validatedSolveCacheEntry = currentEvaluation.validatedSolveCacheEntry;
 
-    if (currentEvaluation.solvable) {
+    if (validatedSolveCacheEntry) {
       return {
-        nodeWithPortPoints: currentNodeWithPortPoints,
+        nodeWithPortPoints: validatedSolveCacheEntry.sample,
         solvable: true,
-        solution: currentEvaluation.solution,
+        solution: validatedSolveCacheEntry.solution,
+        validatedSolveCacheEntry,
       };
     }
   }
@@ -219,10 +282,10 @@ const main = async () => {
   const argv = process.argv.slice(2);
   const pointPairCount = parseIntegerFlag(
     argv,
-    "--point-pairs",
+    ["--point-pairs", "--pair-count", "--pair-counts"],
     DEFAULT_POINT_PAIR_COUNT,
   );
-  const maxSamples = parseOptionalIntegerFlag(argv, "--sample-count");
+  const maxSamples = parseOptionalIntegerFlag(argv, ["--sample-count"]);
   const cachePath = join(process.cwd(), `solve-cache-${pointPairCount}.json`);
   const solveCache = await loadSolveCache(cachePath, pointPairCount);
   const rollingResults: boolean[] = [];
@@ -268,14 +331,13 @@ const main = async () => {
     if (!hit) {
       const solvedNode = findSmallestSolvableNode(sample);
 
-      if (solvedNode.solvable && solvedNode.solution) {
-        solveCache.entries.push(
-          createSolveCacheEntry(
-            solvedNode.nodeWithPortPoints,
-            solvedNode.solution,
-          ),
-        );
+      if (solvedNode.validatedSolveCacheEntry) {
+        solveCache.entries.push(solvedNode.validatedSolveCacheEntry);
         await saveSolveCache(cachePath, pointPairCount, solveCache.entries);
+      } else if (solvedNode.solution) {
+        console.warn(
+          `Discarded ${solvedNode.nodeWithPortPoints.capacityMeshNodeId} because the reusable route failed DRC after reattachment/force-improve`,
+        );
       }
     }
 

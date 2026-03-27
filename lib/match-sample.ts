@@ -1,5 +1,6 @@
 import {
   DEFAULT_DATASET_SEED,
+  MAX_NODE_ASPECT_RATIO,
   createDeterministicRandom,
   generateNodeWithPortPoints,
   getSampleSeed,
@@ -10,6 +11,19 @@ import type { DatasetSample } from "./types";
 export const MATCH_DATASET_SEED = DEFAULT_DATASET_SEED ^ 0x5f37_1c2b;
 const MATCH_STRETCH_SEED = MATCH_DATASET_SEED ^ 0x31a4_b29d;
 const MAX_MATCH_SAMPLE_SEARCH_ATTEMPTS = 1_024;
+const MIN_MATCH_STRETCH_FACTOR = 1.8;
+const MATCH_STRETCH_RANGE = 1.6;
+
+const getMaxStretchFactor = (
+  baseSample: Pick<DatasetSample, "width" | "height">,
+  stretchWidth: boolean,
+) => {
+  if (stretchWidth) {
+    return (MAX_NODE_ASPECT_RATIO * baseSample.height) / baseSample.width;
+  }
+
+  return (MAX_NODE_ASPECT_RATIO * baseSample.width) / baseSample.height;
+};
 
 export const createMatchSample = (sampleIndex: number): DatasetSample => {
   const baseSample = generateNodeWithPortPoints(
@@ -20,12 +34,30 @@ export const createMatchSample = (sampleIndex: number): DatasetSample => {
     getSampleSeed(sampleIndex, MATCH_STRETCH_SEED),
   );
   const stretchWidth = random() >= 0.5;
-  const stretchFactor = 1.8 + random() * 1.6;
+  const desiredStretchFactor =
+    MIN_MATCH_STRETCH_FACTOR + random() * MATCH_STRETCH_RANGE;
+  const stretchFactor = Math.max(
+    1,
+    Math.min(
+      desiredStretchFactor,
+      getMaxStretchFactor(baseSample, stretchWidth),
+    ),
+  );
+  const maxWidth = roundToTwoDecimals(
+    baseSample.height * MAX_NODE_ASPECT_RATIO,
+  );
+  const maxHeight = roundToTwoDecimals(
+    baseSample.width * MAX_NODE_ASPECT_RATIO,
+  );
   const width = roundToTwoDecimals(
-    stretchWidth ? baseSample.width * stretchFactor : baseSample.width,
+    stretchWidth
+      ? Math.min(baseSample.width * stretchFactor, maxWidth)
+      : baseSample.width,
   );
   const height = roundToTwoDecimals(
-    stretchWidth ? baseSample.height : baseSample.height * stretchFactor,
+    stretchWidth
+      ? baseSample.height
+      : Math.min(baseSample.height * stretchFactor, maxHeight),
   );
   const widthScale = width / baseSample.width;
   const heightScale = height / baseSample.height;

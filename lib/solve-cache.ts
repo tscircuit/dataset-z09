@@ -1,5 +1,7 @@
 import { type DrcCheckResult, runDrcCheck } from "./drc-check";
+import { runForceDirectedImprovement } from "./force-improve";
 import { roundToTwoDecimals, stringifyWithFixedNumbers } from "./generator";
+import { simplifyRoutes } from "./simplify";
 import type {
   DatasetSample,
   HighDensityIntraNodeRoute,
@@ -44,7 +46,13 @@ export type ReattachedSolveCacheHit = {
   drc: DrcCheckResult;
 };
 
+type TryApplySolveCacheEntryOptions = {
+  forceImprovementPasses?: number;
+};
+
 const TAU = Math.PI * 2;
+const DEFAULT_REUSE_FORCE_IMPROVEMENT_PASSES = 100;
+const DEFAULT_CACHE_VALIDATION_FORCE_IMPROVEMENT_PASSES = 500;
 
 const normalizeAngle = (angle: number) => {
   const normalizedAngle = angle % TAU;
@@ -476,9 +484,45 @@ export const reattachRouteToNode = (
   return normalizedRoute;
 };
 
+const getValidRoutesForSample = (
+  targetSample: NodeWithPortPoints,
+  routes: HighDensityIntraNodeRoute[],
+  forceImprovementPasses: number,
+): ReattachedSolveCacheHit | null => {
+  const datasetSample = toDatasetSample(targetSample);
+  const simplifiedRoutes = simplifyRoutes(routes);
+  const improvedRoutes =
+    forceImprovementPasses > 0
+      ? runForceDirectedImprovement(
+          datasetSample,
+          simplifiedRoutes,
+          forceImprovementPasses,
+        ).routes
+      : simplifiedRoutes;
+  const improvedDrc = runDrcCheck(targetSample, improvedRoutes);
+
+  if (improvedDrc.ok) {
+    return {
+      routes: improvedRoutes,
+      drc: improvedDrc,
+    };
+  }
+
+  const rawDrc = runDrcCheck(targetSample, routes);
+  if (rawDrc.ok) {
+    return {
+      routes,
+      drc: rawDrc,
+    };
+  }
+
+  return null;
+};
+
 export const tryApplySolveCacheEntry = (
   targetSample: NodeWithPortPoints,
   entry: SolveCacheEntry,
+  options?: TryApplySolveCacheEntryOptions,
 ): ReattachedSolveCacheHit | null => {
   const scaledRoutes = entry.solution.map((route) =>
     scaleRouteToNode(route, entry.sample, targetSample),
@@ -494,15 +538,33 @@ export const tryApplySolveCacheEntry = (
   const routes = reattachedRoutes.filter(
     (route): route is HighDensityIntraNodeRoute => route !== null,
   );
-  const drc = runDrcCheck(targetSample, routes);
 
-  if (!drc.ok) {
+  return getValidRoutesForSample(
+    targetSample,
+    routes,
+    options?.forceImprovementPasses ?? DEFAULT_REUSE_FORCE_IMPROVEMENT_PASSES,
+  );
+};
+
+export const createValidatedSolveCacheEntry = (
+  sample: NodeWithPortPoints,
+  solution: HighDensityIntraNodeRoute[],
+  options?: TryApplySolveCacheEntryOptions,
+): SolveCacheEntry | null => {
+  const entry = createSolveCacheEntry(sample, solution);
+  const validatedEntry = tryApplySolveCacheEntry(entry.sample, entry, {
+    forceImprovementPasses:
+      options?.forceImprovementPasses ??
+      DEFAULT_CACHE_VALIDATION_FORCE_IMPROVEMENT_PASSES,
+  });
+
+  if (!validatedEntry) {
     return null;
   }
 
   return {
-    routes,
-    drc,
+    ...entry,
+    solution: validatedEntry.routes,
   };
 };
 

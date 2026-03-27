@@ -11,6 +11,7 @@ export const MIN_ROUTE_COUNT = 1;
 export const MAX_ROUTE_COUNT = 12;
 export const NODE_SIZE_MIN_MM = 1;
 export const NODE_SIZE_MAX_MM = 30;
+export const MAX_NODE_ASPECT_RATIO = 4;
 
 const AVAILABLE_Z = [0, 1] as const;
 const ROOT_CONNECTION_SHARE_PROBABILITY = 0.05;
@@ -68,8 +69,8 @@ const pickOne = <T>(random: Random, values: readonly T[]) =>
   values[randomInt(random, 0, values.length - 1)] as T;
 
 const chooseHeightForWidth = (random: Random, width: number) => {
-  const minHeight = Math.max(NODE_SIZE_MIN_MM, width / 4);
-  const maxHeight = Math.min(NODE_SIZE_MAX_MM, width * 4);
+  const minHeight = Math.max(NODE_SIZE_MIN_MM, width / MAX_NODE_ASPECT_RATIO);
+  const maxHeight = Math.min(NODE_SIZE_MAX_MM, width * MAX_NODE_ASPECT_RATIO);
   return randomFloat(random, minHeight, maxHeight);
 };
 
