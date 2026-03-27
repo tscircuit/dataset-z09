@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { roundToTwoDecimals } from "../lib/generator";
 import {
   createMatchSample,
   createMatchSampleWithPairCount,
@@ -60,5 +61,22 @@ test("createMatchSample keeps generated samples within a 4:1 aspect ratio", () =
     );
 
     expect(aspectRatio).toBeLessThanOrEqual(4);
+  }
+});
+
+test("createMatchSample keeps generated port points within declared bounds", () => {
+  for (let sampleIndex = 1_000_001; sampleIndex < 1_000_101; sampleIndex += 1) {
+    const sample = createMatchSample(sampleIndex);
+    const minX = roundToTwoDecimals(sample.center.x - sample.width / 2);
+    const maxX = roundToTwoDecimals(sample.center.x + sample.width / 2);
+    const minY = roundToTwoDecimals(sample.center.y - sample.height / 2);
+    const maxY = roundToTwoDecimals(sample.center.y + sample.height / 2);
+
+    for (const portPoint of sample.portPoints) {
+      expect(portPoint.x).toBeGreaterThanOrEqual(minX);
+      expect(portPoint.x).toBeLessThanOrEqual(maxX);
+      expect(portPoint.y).toBeGreaterThanOrEqual(minY);
+      expect(portPoint.y).toBeLessThanOrEqual(maxY);
+    }
   }
 });

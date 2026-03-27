@@ -61,11 +61,41 @@ export type ReattachedSolveCacheHit = {
   drc: DrcCheckResult;
 };
 
+export type SolveCacheApplyFailure =
+  | {
+      ok: false;
+      reason: "reattach-failed";
+    }
+  | {
+      ok: false;
+      reason: "drc-failed";
+      improvedDrc: DrcCheckResult;
+      rawDrc: DrcCheckResult;
+    };
+
+export type SolveCacheApplyResult =
+  | ({ ok: true } & ReattachedSolveCacheHit)
+  | SolveCacheApplyFailure;
+
+export type SolveCacheNearestFailure = {
+  candidate: SolveCacheCandidate;
+  failure: SolveCacheApplyFailure;
+};
+
+export type SolveCacheMatchResult = {
+  match: {
+    candidate: SolveCacheCandidate;
+    applied: ReattachedSolveCacheHit;
+  } | null;
+  nearestFailure: SolveCacheNearestFailure | null;
+};
+
 type TryApplySolveCacheEntryOptions = {
   forceImprovementPasses?: number;
 };
 
 const TAU = Math.PI * 2;
+export const DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY = 16;
 const DEFAULT_REUSE_FORCE_IMPROVEMENT_PASSES = 100;
 const DEFAULT_CACHE_VALIDATION_FORCE_IMPROVEMENT_PASSES = 500;
 
@@ -644,7 +674,7 @@ const getValidRoutesForSample = (
   targetSample: NodeWithPortPoints,
   routes: HighDensityIntraNodeRoute[],
   forceImprovementPasses: number,
-): ReattachedSolveCacheHit | null => {
+): SolveCacheApplyResult => {
   const datasetSample = toDatasetSample(targetSample);
   const simplifiedRoutes = simplifyRoutes(routes);
   const improvedRoutes =
@@ -659,6 +689,7 @@ const getValidRoutesForSample = (
 
   if (improvedDrc.ok) {
     return {
+      ok: true,
       routes: improvedRoutes,
       drc: improvedDrc,
     };
@@ -667,19 +698,25 @@ const getValidRoutesForSample = (
   const rawDrc = runDrcCheck(targetSample, routes);
   if (rawDrc.ok) {
     return {
+      ok: true,
       routes,
       drc: rawDrc,
     };
   }
 
-  return null;
+  return {
+    ok: false,
+    reason: "drc-failed",
+    improvedDrc,
+    rawDrc,
+  };
 };
 
-export const tryApplySolveCacheEntry = (
+export const diagnoseSolveCacheEntryApplication = (
   targetSample: NodeWithPortPoints,
   entry: SolveCacheEntry,
   options?: TryApplySolveCacheEntryOptions,
-): ReattachedSolveCacheHit | null => {
+): SolveCacheApplyResult => {
   const scaledRoutes = entry.solution.map((route) =>
     scaleRouteToNode(route, entry.sample, targetSample),
   );
@@ -688,7 +725,10 @@ export const tryApplySolveCacheEntry = (
   );
 
   if (reattachedRoutes.some((route) => route === null)) {
-    return null;
+    return {
+      ok: false,
+      reason: "reattach-failed",
+    };
   }
 
   const routes = reattachedRoutes.filter(
@@ -700,6 +740,74 @@ export const tryApplySolveCacheEntry = (
     routes,
     options?.forceImprovementPasses ?? DEFAULT_REUSE_FORCE_IMPROVEMENT_PASSES,
   );
+};
+
+export const tryApplySolveCacheEntry = (
+  targetSample: NodeWithPortPoints,
+  entry: SolveCacheEntry,
+  options?: TryApplySolveCacheEntryOptions,
+): ReattachedSolveCacheHit | null => {
+  const result = diagnoseSolveCacheEntryApplication(
+    targetSample,
+    entry,
+    options,
+  );
+
+  return result.ok
+    ? {
+        routes: result.routes,
+        drc: result.drc,
+      }
+    : null;
+};
+
+export const findSolveCacheMatch = (
+  targetSample: NodeWithPortPoints,
+  entries: SolveCacheEntry[],
+  options?: TryApplySolveCacheEntryOptions & {
+    maxCandidatesToTry?: number;
+  },
+): SolveCacheMatchResult => {
+  const candidates = getSolveCacheCandidates(targetSample, entries).slice(
+    0,
+    options?.maxCandidatesToTry ?? DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
+  );
+  let nearestFailure: SolveCacheNearestFailure | null = null;
+
+  for (const candidate of candidates) {
+    const result = diagnoseSolveCacheEntryApplication(
+      targetSample,
+      candidate.entry,
+      {
+        forceImprovementPasses: options?.forceImprovementPasses,
+      },
+    );
+
+    if (result.ok) {
+      return {
+        match: {
+          candidate,
+          applied: {
+            routes: result.routes,
+            drc: result.drc,
+          },
+        },
+        nearestFailure,
+      };
+    }
+
+    if (nearestFailure === null) {
+      nearestFailure = {
+        candidate,
+        failure: result,
+      };
+    }
+  }
+
+  return {
+    match: null,
+    nearestFailure,
+  };
 };
 
 export const createValidatedSolveCacheEntry = (

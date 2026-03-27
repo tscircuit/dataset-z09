@@ -8,11 +8,11 @@ import {
   SIMPLIFIED_SAMPLES_DIR_NAME,
 } from "./sample-directories";
 import {
+  DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
   type SolveCacheFile,
   canonicalizeDatasetSample,
-  getSolveCacheCandidates,
+  findSolveCacheMatch,
   parseSolveCacheFile,
-  tryApplySolveCacheEntry,
 } from "./solve-cache";
 import type {
   DatasetSample,
@@ -292,37 +292,46 @@ export const createNearestNeighborVitePlugin = (): Plugin => {
 
       const canonicalSample = canonicalizeDatasetSample(sample);
       const solveCache = await getSolveCache(rootDir, pointPairCount);
-      const candidates = getSolveCacheCandidates(
+      const solveCacheMatch = findSolveCacheMatch(
         canonicalSample,
         solveCache.entries,
+        {
+          maxCandidatesToTry: DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
+        },
       );
-      const nearest = candidates[0];
+      const matchedCandidate = solveCacheMatch.match?.candidate;
+      const nearestFailure = solveCacheMatch.nearestFailure;
+      const fallbackCandidate = nearestFailure?.candidate ?? null;
+      const displayedCandidate = matchedCandidate ?? fallbackCandidate;
 
-      if (!nearest) {
+      if (!displayedCandidate) {
         sendJson(response, 404, {
           error: `No solve-cache entries matched vecRaw length ${canonicalSample.vecRaw?.length ?? computeVecRaw(canonicalSample).length}`,
         });
         return;
       }
-
-      const appliedSolveCacheEntry = tryApplySolveCacheEntry(
-        canonicalSample,
-        nearest.entry,
+      const entryIndex = solveCache.entries.indexOf(
+        displayedCandidate.sourceEntry,
       );
-      const entryIndex = solveCache.entries.indexOf(nearest.sourceEntry);
+      const applyError =
+        solveCacheMatch.match !== null
+          ? null
+          : nearestFailure?.failure.reason === "reattach-failed"
+            ? `No reusable match among the first ${DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY} candidates. Nearest candidate failed reattachment.`
+            : nearestFailure
+              ? `No reusable match among the first ${DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY} candidates. Nearest candidate failed DRC.`
+              : `No reusable match among the first ${DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY} candidates.`;
 
       sendJson(response, 200, {
         entryIndex,
-        distance: nearest.distance,
-        symmetry: nearest.symmetry,
+        distance: displayedCandidate.distance,
+        symmetry: displayedCandidate.symmetry,
         cacheSample: getDatasetSampleFromNode(
-          nearest.entry.sample,
-          nearest.entry.solution,
+          displayedCandidate.entry.sample,
+          displayedCandidate.entry.solution,
         ),
-        appliedRoutes: appliedSolveCacheEntry?.routes ?? null,
-        applyError: appliedSolveCacheEntry
-          ? null
-          : "Nearest solve-cache entry failed reattachment or DRC",
+        appliedRoutes: solveCacheMatch.match?.applied.routes ?? null,
+        applyError,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

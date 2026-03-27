@@ -159,6 +159,32 @@ test("runDrcCheck accepts boundary endpoints without out-of-bounds issues", () =
   );
 });
 
+test("runDrcCheck accepts perimeter points after width rounding to two decimals", () => {
+  const nodeWithPortPoints: NodeWithPortPoints = {
+    capacityMeshNodeId: "sample-drc-rounded-bounds",
+    center: { x: 0, y: 0 },
+    width: 12.99,
+    height: 51.96,
+    availableZ: [0, 1],
+    portPoints: [
+      { connectionName: "conn00", x: 0.74, y: 25.98, z: 1 },
+      { connectionName: "conn00", x: -6.5, y: -11.48, z: 1 },
+    ],
+  };
+
+  const result = runDrcCheck(nodeWithPortPoints, [
+    createRoute("conn00", [
+      { x: 0.74, y: 25.98, z: 1 },
+      { x: -6.5, y: -11.48, z: 1 },
+    ]),
+  ]);
+
+  expect(result.ok).toBe(true);
+  expect(result.issues.some((issue) => issue.kind === "out-of-bounds")).toBe(
+    false,
+  );
+});
+
 test("runDrcCheck accepts separated routes", () => {
   const nodeWithPortPoints = createNodeWithPortPoints([
     { connectionName: "conn00", x: -1.5, y: -1, z: 0 },

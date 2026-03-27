@@ -4,6 +4,7 @@ import {
   canonicalizeDatasetSample,
   createSolveCacheEntry,
   createValidatedSolveCacheEntry,
+  findSolveCacheMatch,
   getSolveCacheCandidates,
   tryApplySolveCacheEntry,
 } from "../lib/solve-cache";
@@ -401,4 +402,71 @@ test("getSolveCacheCandidates matches rotated cache entries through dihedral sym
 
   expect(appliedCacheEntry).not.toBeNull();
   expect(appliedCacheEntry?.drc.ok).toBe(true);
+});
+
+test("findSolveCacheMatch returns a later successful candidate when the nearest one fails", () => {
+  const sample: DatasetSample = canonicalizeDatasetSample({
+    capacityMeshNodeId: "sample-match-search",
+    center: { x: 0, y: 0 },
+    width: 4,
+    height: 2,
+    availableZ: [0, 1],
+    solvable: true,
+    solution: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        traceThickness: 0.1,
+        viaDiameter: 0.3,
+        route: [
+          { x: -2, y: 0, z: 0 },
+          { x: 2, y: 0, z: 0 },
+        ],
+        vias: [],
+      },
+    ],
+    portPoints: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-a",
+        x: -2,
+        y: 0,
+        z: 0,
+      },
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-b",
+        x: 2,
+        y: 0,
+        z: 0,
+      },
+    ],
+  });
+
+  const invalidNearestEntry = createSolveCacheEntry(sample, [
+    {
+      connectionName: "conn00",
+      rootConnectionName: "root00",
+      traceThickness: 0.1,
+      viaDiameter: 0.3,
+      route: [
+        { x: -2, y: 0, z: 0 },
+        { x: -2, y: 0, z: 1 },
+        { x: 2, y: 0, z: 1 },
+        { x: 2, y: 0, z: 0 },
+      ],
+      vias: [],
+    },
+  ]);
+  const validEntry = createSolveCacheEntry(sample, sample.solution ?? []);
+
+  const match = findSolveCacheMatch(sample, [invalidNearestEntry, validEntry], {
+    maxCandidatesToTry: 16,
+  });
+
+  expect(match.nearestFailure?.candidate.sourceEntry).toBe(invalidNearestEntry);
+  expect(match.match?.candidate.sourceEntry).toBe(validEntry);
+  expect(match.match?.applied.drc.ok).toBe(true);
 });

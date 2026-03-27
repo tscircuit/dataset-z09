@@ -1,3 +1,4 @@
+import { roundToTwoDecimals } from "./generator";
 import type {
   HighDensityIntraNodeRoute,
   NodeWithPortPoints,
@@ -192,10 +193,18 @@ const getSegmentDistance = (
 };
 
 const getNodeBounds = (nodeWithPortPoints: NodeWithPortPoints) => ({
-  minX: nodeWithPortPoints.center.x - nodeWithPortPoints.width / 2,
-  maxX: nodeWithPortPoints.center.x + nodeWithPortPoints.width / 2,
-  minY: nodeWithPortPoints.center.y - nodeWithPortPoints.height / 2,
-  maxY: nodeWithPortPoints.center.y + nodeWithPortPoints.height / 2,
+  minX: roundToTwoDecimals(
+    nodeWithPortPoints.center.x - nodeWithPortPoints.width / 2,
+  ),
+  maxX: roundToTwoDecimals(
+    nodeWithPortPoints.center.x + nodeWithPortPoints.width / 2,
+  ),
+  minY: roundToTwoDecimals(
+    nodeWithPortPoints.center.y - nodeWithPortPoints.height / 2,
+  ),
+  maxY: roundToTwoDecimals(
+    nodeWithPortPoints.center.y + nodeWithPortPoints.height / 2,
+  ),
 });
 
 const getRouteNetName = (routeLike: {

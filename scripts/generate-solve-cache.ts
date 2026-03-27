@@ -1,17 +1,18 @@
 import { join } from "node:path";
 import { HyperSingleIntraNodeSolver } from "@tscircuit/capacity-autorouter";
+import type { DrcCheckResult, DrcIssue } from "../lib/drc-check";
 import { scaleNodeWithPortPoints } from "../lib/generator";
 import { createMatchSampleWithPairCount } from "../lib/match-sample";
 import {
+  DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
   type SolveCacheEntry,
   canonicalizeDatasetSample,
   createEmptySolveCache,
   createValidatedSolveCacheEntry,
+  findSolveCacheMatch,
   getNodePointPairCount,
-  getSolveCacheCandidates,
   parseSolveCacheFile,
   serializeSolveCacheFile,
-  tryApplySolveCacheEntry,
 } from "../lib/solve-cache";
 import type {
   HighDensityIntraNodeRoute,
@@ -25,7 +26,6 @@ const DEFAULT_POINT_PAIR_COUNT = 2;
 const SHRINK_FACTOR = 0.9;
 const FINE_SHRINK_FACTOR = 0.98;
 const GROW_FACTOR = 1.1;
-const MAX_CACHE_CANDIDATES_TO_TRY = 16;
 const ROLLING_WINDOW_SIZE = 100;
 
 type SolverEvaluation = {
@@ -35,9 +35,7 @@ type SolverEvaluation = {
 };
 
 type SolvedNodeSearchResult = {
-  nodeWithPortPoints: NodeWithPortPoints;
-  solvable: boolean;
-  solution: HighDensityIntraNodeRoute[] | null;
+  terminalNodeWithPortPoints: NodeWithPortPoints;
   validatedSolveCacheEntry: SolveCacheEntry | null;
 };
 
@@ -150,9 +148,7 @@ const evaluateNode = (
 const toSolvedNodeSearchResult = (
   validatedSolveCacheEntry: SolveCacheEntry,
 ): SolvedNodeSearchResult => ({
-  nodeWithPortPoints: validatedSolveCacheEntry.sample,
-  solvable: true,
-  solution: validatedSolveCacheEntry.solution,
+  terminalNodeWithPortPoints: validatedSolveCacheEntry.sample,
   validatedSolveCacheEntry,
 });
 
@@ -219,9 +215,7 @@ const findSmallestSolvableNode = (
 
     if (!largerNodeWithPortPoints) {
       return {
-        nodeWithPortPoints: currentNodeWithPortPoints,
-        solvable: false,
-        solution: null,
+        terminalNodeWithPortPoints: currentNodeWithPortPoints,
         validatedSolveCacheEntry: null,
       };
     }
@@ -236,6 +230,22 @@ const findSmallestSolvableNode = (
       );
     }
   }
+};
+
+const summarizeDrcIssues = (drc: DrcCheckResult) => {
+  if (drc.issues.length === 0) {
+    return "none";
+  }
+
+  const issueCounts = new Map<DrcIssue["kind"], number>();
+
+  for (const issue of drc.issues) {
+    issueCounts.set(issue.kind, (issueCounts.get(issue.kind) ?? 0) + 1);
+  }
+
+  return [...issueCounts.entries()]
+    .map(([kind, count]) => `${kind}:${count}`)
+    .join(",");
 };
 
 const createRandomSample = (pointPairCount: number) => {
@@ -312,36 +322,39 @@ const main = async () => {
       );
     }
 
-    const candidates = getSolveCacheCandidates(
-      sample,
-      solveCache.entries,
-    ).slice(0, MAX_CACHE_CANDIDATES_TO_TRY);
-
-    let hit = false;
-
-    for (const candidate of candidates) {
-      const appliedSolveCacheEntry = tryApplySolveCacheEntry(
-        sample,
-        candidate.entry,
-      );
-
-      if (!appliedSolveCacheEntry) {
-        continue;
-      }
-
-      hit = true;
-      break;
-    }
+    const solveCacheMatch = findSolveCacheMatch(sample, solveCache.entries, {
+      maxCandidatesToTry: DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
+    });
+    const hit = solveCacheMatch.match !== null;
 
     if (!hit) {
+      const nearestFailure = solveCacheMatch.nearestFailure;
+      if (nearestFailure) {
+        const entryIndex = solveCache.entries.indexOf(
+          nearestFailure.candidate.sourceEntry,
+        );
+        const failureDetails =
+          nearestFailure.failure.reason === "reattach-failed"
+            ? "failure=reattach-failed"
+            : `failure=drc-failed improvedIssues=${summarizeDrcIssues(
+                nearestFailure.failure.improvedDrc,
+              )} rawIssues=${summarizeDrcIssues(nearestFailure.failure.rawDrc)}`;
+
+        console.warn(
+          `nearestMiss=entry#${entryIndex} symmetry=${nearestFailure.candidate.symmetry} distance=${nearestFailure.candidate.distance.toFixed(4)} ${failureDetails}`,
+        );
+      } else {
+        console.warn("nearestMiss=none");
+      }
+
       const solvedNode = findSmallestSolvableNode(sample);
 
       if (solvedNode.validatedSolveCacheEntry) {
         solveCache.entries.push(solvedNode.validatedSolveCacheEntry);
         await saveSolveCache(cachePath, pointPairCount, solveCache.entries);
-      } else if (solvedNode.solution) {
+      } else {
         console.warn(
-          `Discarded ${solvedNode.nodeWithPortPoints.capacityMeshNodeId} because the reusable route failed DRC after reattachment/force-improve`,
+          `Could not find a DRC-clean solvable cache entry for ${solvedNode.terminalNodeWithPortPoints.capacityMeshNodeId} before hitting the scaling limits`,
         );
       }
     }

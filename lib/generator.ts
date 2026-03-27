@@ -77,6 +77,32 @@ const chooseHeightForWidth = (random: Random, width: number) => {
 const getAxisPadding = (size: number) =>
   Math.min(Math.max(size * 0.08, 0.08), Math.max(size / 2 - 0.02, 0));
 
+const getNodeBounds = (
+  center: { x: number; y: number },
+  width: number,
+  height: number,
+) => ({
+  minX: roundToTwoDecimals(center.x - width / 2),
+  maxX: roundToTwoDecimals(center.x + width / 2),
+  minY: roundToTwoDecimals(center.y - height / 2),
+  maxY: roundToTwoDecimals(center.y + height / 2),
+});
+
+export const clampPointToNodeBounds = <T extends { x: number; y: number }>(
+  point: T,
+  center: { x: number; y: number },
+  width: number,
+  height: number,
+): T => {
+  const bounds = getNodeBounds(center, width, height);
+
+  return {
+    ...point,
+    x: roundToTwoDecimals(clamp(point.x, bounds.minX, bounds.maxX)),
+    y: roundToTwoDecimals(clamp(point.y, bounds.minY, bounds.maxY)),
+  };
+};
+
 const randomCoordinateOnAxis = (
   random: Random,
   min: number,
@@ -311,17 +337,24 @@ export const scaleNodeWithPortPoints = (
     ...nodeWithPortPoints,
     width,
     height,
-    portPoints: nodeWithPortPoints.portPoints.map((portPoint) => ({
-      ...portPoint,
-      x: roundToTwoDecimals(
-        nodeWithPortPoints.center.x +
-          (portPoint.x - nodeWithPortPoints.center.x) * scaleFactor,
+    portPoints: nodeWithPortPoints.portPoints.map((portPoint) =>
+      clampPointToNodeBounds(
+        {
+          ...portPoint,
+          x: roundToTwoDecimals(
+            nodeWithPortPoints.center.x +
+              (portPoint.x - nodeWithPortPoints.center.x) * scaleFactor,
+          ),
+          y: roundToTwoDecimals(
+            nodeWithPortPoints.center.y +
+              (portPoint.y - nodeWithPortPoints.center.y) * scaleFactor,
+          ),
+        },
+        nodeWithPortPoints.center,
+        width,
+        height,
       ),
-      y: roundToTwoDecimals(
-        nodeWithPortPoints.center.y +
-          (portPoint.y - nodeWithPortPoints.center.y) * scaleFactor,
-      ),
-    })),
+    ),
   };
 };
 

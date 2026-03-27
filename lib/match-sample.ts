@@ -1,6 +1,7 @@
 import {
   DEFAULT_DATASET_SEED,
   MAX_NODE_ASPECT_RATIO,
+  clampPointToNodeBounds,
   createDeterministicRandom,
   generateNodeWithPortPoints,
   getSampleSeed,
@@ -69,15 +70,24 @@ export const createMatchSample = (sampleIndex: number): DatasetSample => {
     height,
     solvable: false,
     solution: null,
-    portPoints: baseSample.portPoints.map((portPoint) => ({
-      ...portPoint,
-      x: roundToTwoDecimals(
-        baseSample.center.x + (portPoint.x - baseSample.center.x) * widthScale,
+    portPoints: baseSample.portPoints.map((portPoint) =>
+      clampPointToNodeBounds(
+        {
+          ...portPoint,
+          x: roundToTwoDecimals(
+            baseSample.center.x +
+              (portPoint.x - baseSample.center.x) * widthScale,
+          ),
+          y: roundToTwoDecimals(
+            baseSample.center.y +
+              (portPoint.y - baseSample.center.y) * heightScale,
+          ),
+        },
+        baseSample.center,
+        width,
+        height,
       ),
-      y: roundToTwoDecimals(
-        baseSample.center.y + (portPoint.y - baseSample.center.y) * heightScale,
-      ),
-    })),
+    ),
   };
 };
 
@@ -115,14 +125,21 @@ export const resizeSampleToDimensions = (
     ...sample,
     width: roundToTwoDecimals(width),
     height: roundToTwoDecimals(height),
-    portPoints: sample.portPoints.map((portPoint) => ({
-      ...portPoint,
-      x: roundToTwoDecimals(
-        sample.center.x + (portPoint.x - sample.center.x) * widthScale,
+    portPoints: sample.portPoints.map((portPoint) =>
+      clampPointToNodeBounds(
+        {
+          ...portPoint,
+          x: roundToTwoDecimals(
+            sample.center.x + (portPoint.x - sample.center.x) * widthScale,
+          ),
+          y: roundToTwoDecimals(
+            sample.center.y + (portPoint.y - sample.center.y) * heightScale,
+          ),
+        },
+        sample.center,
+        width,
+        height,
       ),
-      y: roundToTwoDecimals(
-        sample.center.y + (portPoint.y - sample.center.y) * heightScale,
-      ),
-    })),
+    ),
   };
 };
