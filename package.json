@@ -9,6 +9,7 @@
     "start": "cosmos",
     "build:site": "cosmos-export",
     "generate:samples": "bun run scripts/generate-samples.ts",
+    "generate:solve-cache": "bun run scripts/generate-solve-cache.ts",
     "simplify:samples": "bun run scripts/simplify-samples.ts",
     "serialize:samples": "bun run scripts/serialize-samples.ts",
     "write:vec-raw": "bun run scripts/write-vec-raw-to-samples.ts",

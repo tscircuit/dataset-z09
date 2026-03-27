@@ -6,7 +6,6 @@
     "module": "Preserve",
     "moduleDetection": "force",
     "jsx": "react-jsx",
-    "allowJs": true,
     "types": ["bun-types", "vite/client"],
 
     // Bundler mode
@@ -14,7 +13,6 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "resolveJsonModule": true,
 
     // Best practices
     "strict": true,
@@ -33,5 +31,22 @@
       "tests/*": ["./tests/*"]
     }
   },
-  "exclude": ["./tscircuit-autorouter", "./high-density-a01"]
+  "include": [
+    "json.d.ts",
+    "*.ts",
+    "*.tsx",
+    "lib/**/*.ts",
+    "pages/**/*.ts",
+    "pages/**/*.tsx",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "tests/**/*.tsx"
+  ],
+  "exclude": [
+    "./tscircuit-autorouter",
+    "./high-density-a01",
+    "./direct-out-samples",
+    "./simplified-samples",
+    "./sample-raw-vec-index.json"
+  ]
 }
