@@ -1,10 +1,15 @@
 import type { DatasetSample, HighDensityIntraNodeRoute } from "./types";
 
-type RoutePoint = HighDensityIntraNodeRoute["route"][number];
-
 type Vector = {
   x: number;
   y: number;
+};
+
+type Bounds = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
 };
 
 type MutableNode = {
@@ -25,26 +30,32 @@ type MutableRoute = {
 type ForceElementBase = {
   routeIndex: number;
   rootConnectionName: string;
+  nodeIndex: number;
   x: number;
   y: number;
+  fixed: boolean;
 };
 
-type SegmentForceElement = ForceElementBase & {
-  kind: "segment";
+type PointForceElement = ForceElementBase & {
+  kind: "point";
   z: number;
-  passive: boolean;
+};
+
+type ViaForceElement = ForceElementBase & {
+  kind: "via";
+};
+
+type ForceElement = PointForceElement | ViaForceElement;
+
+type SegmentObstacle = {
+  routeIndex: number;
+  rootConnectionName: string;
+  z: number;
   startNodeIndex: number;
   endNodeIndex: number;
   start: Vector;
   end: Vector;
 };
-
-type ViaForceElement = ForceElementBase & {
-  kind: "via";
-  nodeIndex: number;
-};
-
-type ForceElement = SegmentForceElement | ViaForceElement;
 
 type ClosestPointResult = {
   point: Vector;
@@ -52,21 +63,8 @@ type ClosestPointResult = {
   distance: number;
 };
 
-type ClosestSegmentPairResult = {
-  leftPoint: Vector;
-  rightPoint: Vector;
-  leftT: number;
-  rightT: number;
-  distance: number;
-};
-
-type ElementForceApplication = {
-  force: Vector;
-  t?: number;
-};
-
 export type ForceVector = {
-  kind: "segment" | "via";
+  kind: "point" | "via";
   routeIndex: number;
   rootConnectionName: string;
   x: number;
@@ -89,7 +87,9 @@ export const VIA_SEGMENT_TARGET_CLEARANCE = VIA_RADIUS + 0.25;
 export const VIA_SEGMENT_FALLOFF_DISTANCE = 0.5;
 export const VIA_VIA_REPULSION_STRENGTH = 0.034;
 export const VIA_SEGMENT_REPULSION_STRENGTH = 0.18;
-export const SEGMENT_SEGMENT_REPULSION_STRENGTH = 0.044;
+export const POINT_SEGMENT_REPULSION_STRENGTH = 0.044;
+export const SEGMENT_SEGMENT_REPULSION_STRENGTH =
+  POINT_SEGMENT_REPULSION_STRENGTH;
 export const REPULSION_TAIL_RATIO = 0.08;
 export const REPULSION_FALLOFF = 18;
 export const INTERSECTION_FORCE_BOOST = 3.5;
@@ -142,6 +142,9 @@ const lerpVector = (start: Vector, end: Vector, t: number): Vector => ({
 
 const clampUnitInterval = (value: number) =>
   Math.max(0, Math.min(value, 1));
+
+const clampValue = (value: number, minValue: number, maxValue: number) =>
+  Math.max(minValue, Math.min(value, maxValue));
 
 const getVectorMagnitude = (vector: Vector) =>
   Math.hypot(vector.x, vector.y);
@@ -216,6 +219,60 @@ const getClearanceForceMagnitude = (
   return tailMagnitude < 1e-5 ? 0 : tailMagnitude;
 };
 
+const getSampleBounds = (sample: DatasetSample): Bounds => ({
+  minX: sample.center.x - sample.width / 2,
+  maxX: sample.center.x + sample.width / 2,
+  minY: sample.center.y - sample.height / 2,
+  maxY: sample.center.y + sample.height / 2,
+});
+
+const clampNodeToBounds = (node: MutableNode, bounds: Bounds) => {
+  node.x = clampValue(node.x, bounds.minX, bounds.maxX);
+  node.y = clampValue(node.y, bounds.minY, bounds.maxY);
+};
+
+const clampMutableRoutesToBounds = (
+  mutableRoutes: MutableRoute[],
+  bounds: Bounds,
+) => {
+  for (const mutableRoute of mutableRoutes) {
+    for (const node of mutableRoute.nodes) {
+      clampNodeToBounds(node, bounds);
+    }
+  }
+};
+
+const getElementTargetClearance = (element: ForceElement) =>
+  element.kind === "via" ? VIA_SEGMENT_TARGET_CLEARANCE : TARGET_CLEARANCE;
+
+const getElementFalloffDistance = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_SEGMENT_FALLOFF_DISTANCE
+    : CLEARANCE_FALLOFF_DISTANCE;
+
+const getElementIntersectionBoost = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_SEGMENT_INTERSECTION_FORCE_BOOST
+    : INTERSECTION_FORCE_BOOST;
+
+const getPointSegmentRepulsionStrength = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_SEGMENT_REPULSION_STRENGTH
+    : POINT_SEGMENT_REPULSION_STRENGTH;
+
+const getProjectionRatio = (element: ForceElement) =>
+  element.kind === "via"
+    ? VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO
+    : CLEARANCE_PROJECTION_RATIO;
+
+const getMaxCorrectionForElement = (
+  element: ForceElement,
+  maxCorrection: number,
+) =>
+  element.kind === "via"
+    ? maxCorrection * VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER
+    : maxCorrection;
+
 const buildMutableRoutes = (
   routes: HighDensityIntraNodeRoute[],
 ): MutableRoute[] =>
@@ -269,7 +326,13 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
       nodeIndex += 1
     ) {
       const node = mutableRoute.nodes[nodeIndex];
-      if (!node) continue;
+      const routePointIndex = node?.pointIndexes[0];
+      const routePoint =
+        routePointIndex === undefined
+          ? undefined
+          : mutableRoute.route.route[routePointIndex];
+
+      if (!node || !routePoint) continue;
 
       if (node.pointIndexes.length > 1) {
         elements.push({
@@ -279,42 +342,68 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
           nodeIndex,
           x: node.x,
           y: node.y,
+          fixed: node.fixed,
         });
-      }
-
-      const nextNode = mutableRoute.nodes[nodeIndex + 1];
-      const routePointIndex = node.pointIndexes[0];
-      const routePoint = routePointIndex === undefined
-        ? undefined
-        : mutableRoute.route.route[routePointIndex];
-      const isTerminalSegment =
-        nodeIndex === 0 || nodeIndex === mutableRoute.nodes.length - 2;
-
-      if (!nextNode || !routePoint) continue;
-      if (
-        Math.abs(nextNode.x - node.x) <= POSITION_EPSILON &&
-        Math.abs(nextNode.y - node.y) <= POSITION_EPSILON
-      ) {
         continue;
       }
 
       elements.push({
-        kind: "segment",
+        kind: "point",
         routeIndex,
         rootConnectionName: mutableRoute.rootConnectionName,
+        nodeIndex,
+        x: node.x,
+        y: node.y,
         z: routePoint.z,
-        passive: isTerminalSegment,
-        startNodeIndex: nodeIndex,
-        endNodeIndex: nodeIndex + 1,
-        start: { x: node.x, y: node.y },
-        end: { x: nextNode.x, y: nextNode.y },
-        x: (node.x + nextNode.x) / 2,
-        y: (node.y + nextNode.y) / 2,
+        fixed: node.fixed,
       });
     }
   }
 
   return elements;
+};
+
+const buildSegmentObstacles = (routes: MutableRoute[]): SegmentObstacle[] => {
+  const segments: SegmentObstacle[] = [];
+
+  for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+    const mutableRoute = routes[routeIndex];
+    if (!mutableRoute) continue;
+
+    for (
+      let nodeIndex = 0;
+      nodeIndex < mutableRoute.nodes.length - 1;
+      nodeIndex += 1
+    ) {
+      const startNode = mutableRoute.nodes[nodeIndex];
+      const endNode = mutableRoute.nodes[nodeIndex + 1];
+      const routePointIndex = startNode?.pointIndexes[0];
+      const routePoint =
+        routePointIndex === undefined
+          ? undefined
+          : mutableRoute.route.route[routePointIndex];
+
+      if (!startNode || !endNode || !routePoint) continue;
+      if (
+        Math.abs(endNode.x - startNode.x) <= POSITION_EPSILON &&
+        Math.abs(endNode.y - startNode.y) <= POSITION_EPSILON
+      ) {
+        continue;
+      }
+
+      segments.push({
+        routeIndex,
+        rootConnectionName: mutableRoute.rootConnectionName,
+        z: routePoint.z,
+        startNodeIndex: nodeIndex,
+        endNodeIndex: nodeIndex + 1,
+        start: { x: startNode.x, y: startNode.y },
+        end: { x: endNode.x, y: endNode.y },
+      });
+    }
+  }
+
+  return segments;
 };
 
 const getClosestPointOnSegment = (
@@ -346,151 +435,8 @@ const getClosestPointOnSegment = (
   };
 };
 
-const getClosestPointsBetweenSegments = (
-  leftStart: Vector,
-  leftEnd: Vector,
-  rightStart: Vector,
-  rightEnd: Vector,
-): ClosestSegmentPairResult => {
-  const leftDirection = subtractVector(leftEnd, leftStart);
-  const rightDirection = subtractVector(rightEnd, rightStart);
-  const betweenStarts = subtractVector(leftStart, rightStart);
-  const leftLengthSquared = dotVector(leftDirection, leftDirection);
-  const rightLengthSquared = dotVector(rightDirection, rightDirection);
-
-  if (
-    leftLengthSquared <= POSITION_EPSILON &&
-    rightLengthSquared <= POSITION_EPSILON
-  ) {
-    return {
-      leftPoint: leftStart,
-      rightPoint: rightStart,
-      leftT: 0,
-      rightT: 0,
-      distance: getVectorMagnitude(subtractVector(leftStart, rightStart)),
-    };
-  }
-
-  if (leftLengthSquared <= POSITION_EPSILON) {
-    const closest = getClosestPointOnSegment(leftStart, rightStart, rightEnd);
-    return {
-      leftPoint: leftStart,
-      rightPoint: closest.point,
-      leftT: 0,
-      rightT: closest.t,
-      distance: closest.distance,
-    };
-  }
-
-  if (rightLengthSquared <= POSITION_EPSILON) {
-    const closest = getClosestPointOnSegment(rightStart, leftStart, leftEnd);
-    return {
-      leftPoint: closest.point,
-      rightPoint: rightStart,
-      leftT: closest.t,
-      rightT: 0,
-      distance: closest.distance,
-    };
-  }
-
-  const uv = dotVector(leftDirection, rightDirection);
-  const leftBetween = dotVector(leftDirection, betweenStarts);
-  const rightBetween = dotVector(rightDirection, betweenStarts);
-  const denominator = leftLengthSquared * rightLengthSquared - uv * uv;
-
-  let leftNumerator = 0;
-  let leftDenominator = denominator;
-  let rightNumerator = 0;
-  let rightDenominator = denominator;
-
-  if (denominator <= POSITION_EPSILON) {
-    leftNumerator = 0;
-    leftDenominator = 1;
-    rightNumerator = rightBetween;
-    rightDenominator = rightLengthSquared;
-  } else {
-    leftNumerator = uv * rightBetween - rightLengthSquared * leftBetween;
-    rightNumerator = leftLengthSquared * rightBetween - uv * leftBetween;
-
-    if (leftNumerator < 0) {
-      leftNumerator = 0;
-      rightNumerator = rightBetween;
-      rightDenominator = rightLengthSquared;
-    } else if (leftNumerator > leftDenominator) {
-      leftNumerator = leftDenominator;
-      rightNumerator = rightBetween + uv;
-      rightDenominator = rightLengthSquared;
-    }
-  }
-
-  if (rightNumerator < 0) {
-    rightNumerator = 0;
-
-    if (-leftBetween < 0) {
-      leftNumerator = 0;
-    } else if (-leftBetween > leftLengthSquared) {
-      leftNumerator = leftDenominator;
-    } else {
-      leftNumerator = -leftBetween;
-      leftDenominator = leftLengthSquared;
-    }
-  } else if (rightNumerator > rightDenominator) {
-    rightNumerator = rightDenominator;
-
-    if (-leftBetween + uv < 0) {
-      leftNumerator = 0;
-    } else if (-leftBetween + uv > leftLengthSquared) {
-      leftNumerator = leftDenominator;
-    } else {
-      leftNumerator = -leftBetween + uv;
-      leftDenominator = leftLengthSquared;
-    }
-  }
-
-  const leftT =
-    Math.abs(leftNumerator) <= POSITION_EPSILON
-      ? 0
-      : clampUnitInterval(leftNumerator / leftDenominator);
-  const rightT =
-    Math.abs(rightNumerator) <= POSITION_EPSILON
-      ? 0
-      : clampUnitInterval(rightNumerator / rightDenominator);
-
-  const leftPoint = lerpVector(leftStart, leftEnd, leftT);
-  const rightPoint = lerpVector(rightStart, rightEnd, rightT);
-
-  return {
-    leftPoint,
-    rightPoint,
-    leftT,
-    rightT,
-    distance: getVectorMagnitude(subtractVector(leftPoint, rightPoint)),
-  };
-};
-
-const getSegmentFallbackDirection = (
-  leftSegment: SegmentForceElement,
-  rightSegment: SegmentForceElement,
-  fallbackSeed: number,
-) => {
-  const midpointDelta = subtractVector(leftSegment, rightSegment);
-  if (getVectorMagnitude(midpointDelta) > POSITION_EPSILON) {
-    return normalizeVector(midpointDelta, fallbackSeed);
-  }
-
-  const leftDirection = subtractVector(leftSegment.end, leftSegment.start);
-  const rightDirection = subtractVector(rightSegment.end, rightSegment.start);
-
-  return getPerpendicularVector(
-    getVectorMagnitude(leftDirection) >= getVectorMagnitude(rightDirection)
-      ? leftDirection
-      : rightDirection,
-    fallbackSeed,
-  );
-};
-
-const getViaSegmentFallbackDirection = (
-  segment: SegmentForceElement,
+const getPointSegmentFallbackDirection = (
+  segment: SegmentObstacle,
   fallbackSeed: number,
 ) =>
   getPerpendicularVector(
@@ -507,49 +453,85 @@ const getViaViaInteraction = (
   distance: getVectorMagnitude(subtractVector(leftVia, rightVia)),
 });
 
-const getViaSegmentInteraction = (
-  via: ViaForceElement,
-  segment: SegmentForceElement,
+const getPointSegmentInteraction = (
+  point: Vector,
+  segment: SegmentObstacle,
   fallbackSeed: number,
 ) => {
-  const closest = getClosestPointOnSegment(via, segment.start, segment.end);
-  const separationVector = subtractVector(via, closest.point);
+  const closest = getClosestPointOnSegment(point, segment.start, segment.end);
+  const separationVector = subtractVector(point, closest.point);
 
   return {
-    segmentT: closest.t,
     direction:
       getVectorMagnitude(separationVector) > POSITION_EPSILON
         ? normalizeVector(separationVector, fallbackSeed)
-        : getViaSegmentFallbackDirection(segment, fallbackSeed),
+        : getPointSegmentFallbackDirection(segment, fallbackSeed),
     distance: closest.distance,
   };
 };
 
-const getSegmentSegmentInteraction = (
-  leftSegment: SegmentForceElement,
-  rightSegment: SegmentForceElement,
-  fallbackSeed: number,
+const addForceToNode = (
+  nodeForces: Vector[][],
+  routeIndex: number,
+  nodeIndex: number,
+  force: Vector,
 ) => {
-  const closest = getClosestPointsBetweenSegments(
-    leftSegment.start,
-    leftSegment.end,
-    rightSegment.start,
-    rightSegment.end,
+  const routeForces = nodeForces[routeIndex];
+  if (!routeForces) return;
+
+  routeForces[nodeIndex] = addVector(
+    routeForces[nodeIndex] ?? { x: 0, y: 0 },
+    force,
   );
-  const separationVector = subtractVector(
-    closest.leftPoint,
-    closest.rightPoint,
+};
+
+const applyForceToElement = (
+  element: ForceElement,
+  force: Vector,
+  nodeForces: Vector[][],
+  elementForces?: Vector[],
+  elementIndex?: number,
+) => {
+  if (!element.fixed) {
+    addForceToNode(nodeForces, element.routeIndex, element.nodeIndex, force);
+  }
+
+  if (!element.fixed && elementForces && elementIndex !== undefined) {
+    elementForces[elementIndex] = addVector(
+      elementForces[elementIndex] ?? { x: 0, y: 0 },
+      force,
+    );
+  }
+};
+
+const distributeForceToSegmentPoints = (
+  mutableRoutes: MutableRoute[],
+  segment: SegmentObstacle,
+  force: Vector,
+  nodeForces: Vector[][],
+) => {
+  const mutableRoute = mutableRoutes[segment.routeIndex];
+  if (!mutableRoute) return;
+
+  const startNode = mutableRoute.nodes[segment.startNodeIndex];
+  const endNode = mutableRoute.nodes[segment.endNodeIndex];
+  if (!startNode || !endNode) return;
+
+  const movableNodeIndexes = [segment.startNodeIndex, segment.endNodeIndex].filter(
+    (nodeIndex) => {
+      const node = mutableRoute.nodes[nodeIndex];
+      return node && !node.fixed;
+    },
   );
 
-  return {
-    leftT: closest.leftT,
-    rightT: closest.rightT,
-    direction:
-      getVectorMagnitude(separationVector) > POSITION_EPSILON
-        ? normalizeVector(separationVector, fallbackSeed)
-        : getSegmentFallbackDirection(leftSegment, rightSegment, fallbackSeed),
-    distance: closest.distance,
-  };
+  if (movableNodeIndexes.length === 0) {
+    return;
+  }
+
+  const sharedForce = scaleVector(force, 1 / movableNodeIndexes.length);
+  for (const nodeIndex of movableNodeIndexes) {
+    addForceToNode(nodeForces, segment.routeIndex, nodeIndex, sharedForce);
+  }
 };
 
 const getBorderForce = (
@@ -557,119 +539,59 @@ const getBorderForce = (
   element: ForceElement,
   stepDecay: number,
 ): Vector => {
-  if (element.kind === "segment" && element.passive) {
+  if (element.fixed) {
     return { x: 0, y: 0 };
   }
 
-  const minX = sample.center.x - sample.width / 2;
-  const maxX = sample.center.x + sample.width / 2;
-  const minY = sample.center.y - sample.height / 2;
-  const maxY = sample.center.y + sample.height / 2;
-
-  const leftDistance =
-    element.kind === "segment"
-      ? Math.min(element.start.x, element.end.x) - minX
-      : element.x - minX;
-  const rightDistance =
-    element.kind === "segment"
-      ? maxX - Math.max(element.start.x, element.end.x)
-      : maxX - element.x;
-  const bottomDistance =
-    element.kind === "segment"
-      ? Math.min(element.start.y, element.end.y) - minY
-      : element.y - minY;
-  const topDistance =
-    element.kind === "segment"
-      ? maxY - Math.max(element.start.y, element.end.y)
-      : maxY - element.y;
+  const { minX, maxX, minY, maxY } = getSampleBounds(sample);
+  const targetClearance = getElementTargetClearance(element);
+  const falloffDistance = getElementFalloffDistance(element);
+  const intersectionBoost = getElementIntersectionBoost(element);
 
   return {
     x:
       getClearanceForceMagnitude(
-        leftDistance,
+        element.x - minX,
         BORDER_REPULSION_STRENGTH,
         BORDER_REPULSION_TAIL_RATIO,
         BORDER_REPULSION_FALLOFF,
+        intersectionBoost,
+        targetClearance,
+        falloffDistance,
       ) *
         stepDecay -
       getClearanceForceMagnitude(
-        rightDistance,
+        maxX - element.x,
         BORDER_REPULSION_STRENGTH,
         BORDER_REPULSION_TAIL_RATIO,
         BORDER_REPULSION_FALLOFF,
+        intersectionBoost,
+        targetClearance,
+        falloffDistance,
       ) *
         stepDecay,
     y:
       getClearanceForceMagnitude(
-        bottomDistance,
+        element.y - minY,
         BORDER_REPULSION_STRENGTH,
         BORDER_REPULSION_TAIL_RATIO,
         BORDER_REPULSION_FALLOFF,
+        intersectionBoost,
+        targetClearance,
+        falloffDistance,
       ) *
         stepDecay -
       getClearanceForceMagnitude(
-        topDistance,
+        maxY - element.y,
         BORDER_REPULSION_STRENGTH,
         BORDER_REPULSION_TAIL_RATIO,
         BORDER_REPULSION_FALLOFF,
+        intersectionBoost,
+        targetClearance,
+        falloffDistance,
       ) *
         stepDecay,
   };
-};
-
-const distributeElementForceToNodes = (
-  mutableRoutes: MutableRoute[],
-  element: ForceElement,
-  force: Vector,
-  nodeForces: Vector[][],
-  segmentT = 0.5,
-) => {
-  const routeForces = nodeForces[element.routeIndex];
-  const mutableRoute = mutableRoutes[element.routeIndex];
-  if (!routeForces || !mutableRoute) return;
-
-  if (element.kind === "via") {
-    const node = mutableRoute.nodes[element.nodeIndex];
-    if (!node || node.fixed) return;
-
-    routeForces[element.nodeIndex] = addVector(
-      routeForces[element.nodeIndex] ?? { x: 0, y: 0 },
-      force,
-    );
-    return;
-  }
-
-  if (element.passive) {
-    return;
-  }
-
-  const startNode = mutableRoute.nodes[element.startNodeIndex];
-  const endNode = mutableRoute.nodes[element.endNodeIndex];
-  if (!startNode || !endNode) return;
-
-  const startWeight = 1 - clampUnitInterval(segmentT);
-  const endWeight = clampUnitInterval(segmentT);
-  const movableStartWeight = startNode.fixed ? 0 : startWeight;
-  const movableEndWeight = endNode.fixed ? 0 : endWeight;
-  const movableWeightTotal = movableStartWeight + movableEndWeight;
-
-  if (movableWeightTotal <= POSITION_EPSILON) {
-    return;
-  }
-
-  if (!startNode.fixed && movableStartWeight > 0) {
-    routeForces[element.startNodeIndex] = addVector(
-      routeForces[element.startNodeIndex] ?? { x: 0, y: 0 },
-      scaleVector(force, movableStartWeight / movableWeightTotal),
-    );
-  }
-
-  if (!endNode.fixed && movableEndWeight > 0) {
-    routeForces[element.endNodeIndex] = addVector(
-      routeForces[element.endNodeIndex] ?? { x: 0, y: 0 },
-      scaleVector(force, movableEndWeight / movableWeightTotal),
-    );
-  }
 };
 
 const deriveVias = (route: HighDensityIntraNodeRoute) => {
@@ -729,52 +651,22 @@ const materializeRoutes = (mutableRoutes: MutableRoute[]) =>
     return nextRoute;
   });
 
-const applyElementForce = (
-  mutableRoutes: MutableRoute[],
-  nodeForces: Vector[][],
-  elementForces: Vector[],
-  elementIndex: number,
-  element: ForceElement,
-  application: ElementForceApplication,
-) => {
-  if (element.kind === "segment" && element.passive) {
-    distributeElementForceToNodes(
-      mutableRoutes,
-      element,
-      application.force,
-      nodeForces,
-      application.t,
-    );
-    return;
-  }
-
-  elementForces[elementIndex] = addVector(
-    elementForces[elementIndex] ?? { x: 0, y: 0 },
-    application.force,
-  );
-  distributeElementForceToNodes(
-    mutableRoutes,
-    element,
-    application.force,
-    nodeForces,
-    application.t,
-  );
-};
-
 const resolveClearanceConstraints = (
+  bounds: Bounds,
   mutableRoutes: MutableRoute[],
   passCount = CLEARANCE_PROJECTION_PASSES,
   maxCorrection = MAX_CLEARANCE_CORRECTION,
 ) => {
   for (let passIndex = 0; passIndex < passCount; passIndex += 1) {
     const forceElements = buildForceElements(mutableRoutes);
+    const segments = buildSegmentObstacles(mutableRoutes);
     const nodeCorrections = mutableRoutes.map((mutableRoute) =>
       mutableRoute.nodes.map(() => ({ x: 0, y: 0 })),
     );
 
     for (let leftIndex = 0; leftIndex < forceElements.length; leftIndex += 1) {
       const leftElement = forceElements[leftIndex];
-      if (!leftElement) continue;
+      if (!leftElement || leftElement.kind !== "via") continue;
 
       for (
         let rightIndex = leftIndex + 1;
@@ -782,121 +674,15 @@ const resolveClearanceConstraints = (
         rightIndex += 1
       ) {
         const rightElement = forceElements[rightIndex];
-        if (!rightElement) continue;
+        if (!rightElement || rightElement.kind !== "via") continue;
         if (leftElement.rootConnectionName === rightElement.rootConnectionName) {
           continue;
         }
 
-        const fallbackSeed = passIndex * 1_009 + leftIndex * 97 + rightIndex * 13;
-
-        if (leftElement.kind === "via" && rightElement.kind === "via") {
-          const interaction = getViaViaInteraction(
-            leftElement,
-            rightElement,
-            fallbackSeed,
-          );
-          const penetration = TARGET_CLEARANCE - interaction.distance;
-          if (penetration <= 0) continue;
-
-          const magnitude = Math.min(
-            maxCorrection,
-            penetration * CLEARANCE_PROJECTION_RATIO,
-          );
-          const leftCorrection = scaleVector(interaction.direction, magnitude);
-          const rightCorrection = scaleVector(leftCorrection, -1);
-          distributeElementForceToNodes(
-            mutableRoutes,
-            leftElement,
-            leftCorrection,
-            nodeCorrections,
-          );
-          distributeElementForceToNodes(
-            mutableRoutes,
-            rightElement,
-            rightCorrection,
-            nodeCorrections,
-          );
-          continue;
-        }
-
-        if (leftElement.kind === "via" && rightElement.kind === "segment") {
-          const interaction = getViaSegmentInteraction(
-            leftElement,
-            rightElement,
-            fallbackSeed,
-          );
-          const penetration =
-            VIA_SEGMENT_TARGET_CLEARANCE - interaction.distance;
-          if (penetration <= 0) continue;
-
-          const magnitude = Math.min(
-            maxCorrection * VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER,
-            penetration * VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO,
-          );
-          const viaCorrection = scaleVector(interaction.direction, magnitude);
-          const segmentCorrection = scaleVector(viaCorrection, -1);
-          distributeElementForceToNodes(
-            mutableRoutes,
-            leftElement,
-            viaCorrection,
-            nodeCorrections,
-          );
-          distributeElementForceToNodes(
-            mutableRoutes,
-            rightElement,
-            segmentCorrection,
-            nodeCorrections,
-            interaction.segmentT,
-          );
-          continue;
-        }
-
-        if (leftElement.kind === "segment" && rightElement.kind === "via") {
-          const interaction = getViaSegmentInteraction(
-            rightElement,
-            leftElement,
-            fallbackSeed,
-          );
-          const penetration =
-            VIA_SEGMENT_TARGET_CLEARANCE - interaction.distance;
-          if (penetration <= 0) continue;
-
-          const magnitude = Math.min(
-            maxCorrection * VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER,
-            penetration * VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO,
-          );
-          const segmentCorrection = scaleVector(
-            interaction.direction,
-            -magnitude,
-          );
-          const viaCorrection = scaleVector(segmentCorrection, -1);
-          distributeElementForceToNodes(
-            mutableRoutes,
-            leftElement,
-            segmentCorrection,
-            nodeCorrections,
-            interaction.segmentT,
-          );
-          distributeElementForceToNodes(
-            mutableRoutes,
-            rightElement,
-            viaCorrection,
-            nodeCorrections,
-          );
-          continue;
-        }
-
-        if (leftElement.kind !== "segment" || rightElement.kind !== "segment") {
-          continue;
-        }
-        if (leftElement.z !== rightElement.z) {
-          continue;
-        }
-
-        const interaction = getSegmentSegmentInteraction(
+        const interaction = getViaViaInteraction(
           leftElement,
           rightElement,
-          fallbackSeed,
+          passIndex * 1_009 + leftIndex * 97 + rightIndex * 13,
         );
         const penetration = TARGET_CLEARANCE - interaction.distance;
         if (penetration <= 0) continue;
@@ -907,19 +693,56 @@ const resolveClearanceConstraints = (
         );
         const leftCorrection = scaleVector(interaction.direction, magnitude);
         const rightCorrection = scaleVector(leftCorrection, -1);
-        distributeElementForceToNodes(
-          mutableRoutes,
-          leftElement,
-          leftCorrection,
-          nodeCorrections,
-          interaction.leftT,
+
+        applyForceToElement(leftElement, leftCorrection, nodeCorrections);
+        applyForceToElement(rightElement, rightCorrection, nodeCorrections);
+      }
+    }
+
+    for (
+      let elementIndex = 0;
+      elementIndex < forceElements.length;
+      elementIndex += 1
+    ) {
+      const element = forceElements[elementIndex];
+      if (!element) continue;
+
+      for (
+        let segmentIndex = 0;
+        segmentIndex < segments.length;
+        segmentIndex += 1
+      ) {
+        const segment = segments[segmentIndex];
+        if (!segment) continue;
+        if (element.rootConnectionName === segment.rootConnectionName) {
+          continue;
+        }
+        if (element.kind === "point" && element.z !== segment.z) {
+          continue;
+        }
+
+        const interaction = getPointSegmentInteraction(
+          element,
+          segment,
+          passIndex * 1_009 + elementIndex * 97 + segmentIndex * 13,
         );
-        distributeElementForceToNodes(
+        const penetration =
+          getElementTargetClearance(element) - interaction.distance;
+        if (penetration <= 0) continue;
+
+        const magnitude = Math.min(
+          getMaxCorrectionForElement(element, maxCorrection),
+          penetration * getProjectionRatio(element),
+        );
+        const pointCorrection = scaleVector(interaction.direction, magnitude);
+        const segmentCorrection = scaleVector(pointCorrection, -1);
+
+        applyForceToElement(element, pointCorrection, nodeCorrections);
+        distributeForceToSegmentPoints(
           mutableRoutes,
-          rightElement,
-          rightCorrection,
+          segment,
+          segmentCorrection,
           nodeCorrections,
-          interaction.rightT,
         );
       }
     }
@@ -946,6 +769,8 @@ const resolveClearanceConstraints = (
         node.y += correction.y;
       }
     }
+
+    clampMutableRoutesToBounds(mutableRoutes, bounds);
   }
 };
 
@@ -954,7 +779,9 @@ export const runForceDirectedImprovement = (
   routes: HighDensityIntraNodeRoute[],
   totalSteps: number,
 ): ForceImproveResult => {
+  const bounds = getSampleBounds(sample);
   const mutableRoutes = buildMutableRoutes(routes);
+  clampMutableRoutesToBounds(mutableRoutes, bounds);
   let forceVectors: ForceVector[] = [];
 
   for (let stepIndex = 0; stepIndex < totalSteps; stepIndex += 1) {
@@ -962,6 +789,7 @@ export const runForceDirectedImprovement = (
       totalSteps <= 1 ? 0 : stepIndex / Math.max(totalSteps - 1, 1);
     const stepDecay = MIN_STEP_DECAY + (1 - progress) * (1 - MIN_STEP_DECAY);
     const forceElements = buildForceElements(mutableRoutes);
+    const segments = buildSegmentObstacles(mutableRoutes);
     const nodeForces = mutableRoutes.map((mutableRoute) =>
       mutableRoute.nodes.map(() => ({ x: 0, y: 0 })),
     );
@@ -969,7 +797,7 @@ export const runForceDirectedImprovement = (
 
     for (let leftIndex = 0; leftIndex < forceElements.length; leftIndex += 1) {
       const leftElement = forceElements[leftIndex];
-      if (!leftElement) continue;
+      if (!leftElement || leftElement.kind !== "via") continue;
 
       for (
         let rightIndex = leftIndex + 1;
@@ -977,146 +805,20 @@ export const runForceDirectedImprovement = (
         rightIndex += 1
       ) {
         const rightElement = forceElements[rightIndex];
-        if (!rightElement) continue;
+        if (!rightElement || rightElement.kind !== "via") continue;
         if (leftElement.rootConnectionName === rightElement.rootConnectionName) {
           continue;
         }
 
-        const fallbackSeed = leftIndex * 97 + rightIndex * 13;
-
-        if (leftElement.kind === "via" && rightElement.kind === "via") {
-          const interaction = getViaViaInteraction(
-            leftElement,
-            rightElement,
-            fallbackSeed,
-          );
-          const magnitude =
-            getClearanceForceMagnitude(
-              interaction.distance,
-              VIA_VIA_REPULSION_STRENGTH,
-              REPULSION_TAIL_RATIO,
-              REPULSION_FALLOFF,
-            ) * stepDecay;
-
-          if (magnitude <= 0) continue;
-
-          const leftForce = scaleVector(interaction.direction, magnitude);
-          const rightForce = scaleVector(leftForce, -1);
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            leftIndex,
-            leftElement,
-            { force: leftForce },
-          );
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            rightIndex,
-            rightElement,
-            { force: rightForce },
-          );
-          continue;
-        }
-
-        if (leftElement.kind === "via" && rightElement.kind === "segment") {
-          const interaction = getViaSegmentInteraction(
-            leftElement,
-            rightElement,
-            fallbackSeed,
-          );
-          const magnitude =
-            getClearanceForceMagnitude(
-              interaction.distance,
-              VIA_SEGMENT_REPULSION_STRENGTH,
-              REPULSION_TAIL_RATIO,
-              REPULSION_FALLOFF,
-              VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
-              VIA_SEGMENT_TARGET_CLEARANCE,
-              VIA_SEGMENT_FALLOFF_DISTANCE,
-            ) * stepDecay;
-
-          if (magnitude <= 0) continue;
-
-          const viaForce = scaleVector(interaction.direction, magnitude);
-          const segmentForce = scaleVector(viaForce, -1);
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            leftIndex,
-            leftElement,
-            { force: viaForce },
-          );
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            rightIndex,
-            rightElement,
-            { force: segmentForce, t: interaction.segmentT },
-          );
-          continue;
-        }
-
-        if (leftElement.kind === "segment" && rightElement.kind === "via") {
-          const interaction = getViaSegmentInteraction(
-            rightElement,
-            leftElement,
-            fallbackSeed,
-          );
-          const magnitude =
-            getClearanceForceMagnitude(
-              interaction.distance,
-              VIA_SEGMENT_REPULSION_STRENGTH,
-              REPULSION_TAIL_RATIO,
-              REPULSION_FALLOFF,
-              VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
-              VIA_SEGMENT_TARGET_CLEARANCE,
-              VIA_SEGMENT_FALLOFF_DISTANCE,
-            ) * stepDecay;
-
-          if (magnitude <= 0) continue;
-
-          const segmentForce = scaleVector(interaction.direction, -magnitude);
-          const viaForce = scaleVector(segmentForce, -1);
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            leftIndex,
-            leftElement,
-            { force: segmentForce, t: interaction.segmentT },
-          );
-          applyElementForce(
-            mutableRoutes,
-            nodeForces,
-            elementForces,
-            rightIndex,
-            rightElement,
-            { force: viaForce },
-          );
-          continue;
-        }
-
-        if (leftElement.kind !== "segment" || rightElement.kind !== "segment") {
-          continue;
-        }
-        if (leftElement.z !== rightElement.z) {
-          continue;
-        }
-
-        const interaction = getSegmentSegmentInteraction(
+        const interaction = getViaViaInteraction(
           leftElement,
           rightElement,
-          fallbackSeed,
+          leftIndex * 97 + rightIndex * 13,
         );
         const magnitude =
           getClearanceForceMagnitude(
             interaction.distance,
-            SEGMENT_SEGMENT_REPULSION_STRENGTH,
+            VIA_VIA_REPULSION_STRENGTH,
             REPULSION_TAIL_RATIO,
             REPULSION_FALLOFF,
           ) * stepDecay;
@@ -1125,36 +827,90 @@ export const runForceDirectedImprovement = (
 
         const leftForce = scaleVector(interaction.direction, magnitude);
         const rightForce = scaleVector(leftForce, -1);
-        applyElementForce(
-          mutableRoutes,
+        applyForceToElement(
+          leftElement,
+          leftForce,
           nodeForces,
           elementForces,
           leftIndex,
-          leftElement,
-          { force: leftForce, t: interaction.leftT },
         );
-        applyElementForce(
-          mutableRoutes,
+        applyForceToElement(
+          rightElement,
+          rightForce,
           nodeForces,
           elementForces,
           rightIndex,
-          rightElement,
-          { force: rightForce, t: interaction.rightT },
+        );
+      }
+    }
+
+    for (
+      let elementIndex = 0;
+      elementIndex < forceElements.length;
+      elementIndex += 1
+    ) {
+      const element = forceElements[elementIndex];
+      if (!element) continue;
+
+      for (
+        let segmentIndex = 0;
+        segmentIndex < segments.length;
+        segmentIndex += 1
+      ) {
+        const segment = segments[segmentIndex];
+        if (!segment) continue;
+        if (element.rootConnectionName === segment.rootConnectionName) {
+          continue;
+        }
+        if (element.kind === "point" && element.z !== segment.z) {
+          continue;
+        }
+
+        const interaction = getPointSegmentInteraction(
+          element,
+          segment,
+          elementIndex * 97 + segmentIndex * 13,
+        );
+        const magnitude =
+          getClearanceForceMagnitude(
+            interaction.distance,
+            getPointSegmentRepulsionStrength(element),
+            REPULSION_TAIL_RATIO,
+            REPULSION_FALLOFF,
+            getElementIntersectionBoost(element),
+            getElementTargetClearance(element),
+            getElementFalloffDistance(element),
+          ) * stepDecay;
+
+        if (magnitude <= 0) continue;
+
+        const pointForce = scaleVector(interaction.direction, magnitude);
+        const segmentForce = scaleVector(pointForce, -1);
+
+        applyForceToElement(
+          element,
+          pointForce,
+          nodeForces,
+          elementForces,
+          elementIndex,
+        );
+        distributeForceToSegmentPoints(
+          mutableRoutes,
+          segment,
+          segmentForce,
+          nodeForces,
         );
       }
     }
 
     forceVectors = forceElements.map((element, elementIndex) => {
       const borderForce = getBorderForce(sample, element, stepDecay);
-      elementForces[elementIndex] = addVector(
-        elementForces[elementIndex] ?? { x: 0, y: 0 },
-        borderForce,
-      );
-      distributeElementForceToNodes(
-        mutableRoutes,
+      applyForceToElement(
         element,
         borderForce,
         nodeForces,
+        elementForces,
+        elementIndex,
       );
 
       return {
@@ -1222,10 +978,12 @@ export const runForceDirectedImprovement = (
       }
     }
 
-    resolveClearanceConstraints(mutableRoutes);
+    clampMutableRoutesToBounds(mutableRoutes, bounds);
+    resolveClearanceConstraints(bounds, mutableRoutes);
   }
 
   resolveClearanceConstraints(
+    bounds,
     mutableRoutes,
     FINAL_CLEARANCE_PROJECTION_PASSES,
     FINAL_MAX_CLEARANCE_CORRECTION,
