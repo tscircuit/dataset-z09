@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { createDeterministicRandom, getSampleSeed } from "../lib/generator";
 import {
+  DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
   canonicalizeDatasetSample,
   diagnoseSolveCacheEntryApplication,
   getSolveCacheCandidates,
@@ -13,7 +14,7 @@ import { computeVecRaw } from "../lib/vec-raw";
 import { canonicalizeRawVecStructure } from "../lib/vector-search";
 
 const DEFAULT_PAIR_COUNT = 2;
-const DEFAULT_TOP_K = 2;
+const DEFAULT_TOP_K = DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY;
 const DEFAULT_MAX_PROBE_RANK = 64;
 const DEFAULT_EPOCHS = 32;
 const DEFAULT_BATCH_SIZE = 256;
@@ -61,6 +62,10 @@ type EpochMetrics = {
   avgLoss: number | null;
   drcChecksPerformed: number;
   drcChecksCached: number;
+  evaluationAccuracy: number;
+  evaluationAvgFirstPassRank: number | null;
+  bestAccuracy: number;
+  bestAvgFirstPassRank: number | null;
   weights: WeightVector;
 };
 
@@ -207,6 +212,24 @@ const getWeightedDistance = (
 
 const formatWeights = (weights: WeightVector) =>
   `ratio=${weights.ratio.toFixed(4)} z=${weights.z.toFixed(4)} distWeight=${weights.distWeight.toFixed(4)}`;
+
+const isEvaluationBetter = (
+  candidate: EvaluationMetrics,
+  incumbent: EvaluationMetrics,
+) => {
+  if (candidate.accuracy !== incumbent.accuracy) {
+    return candidate.accuracy > incumbent.accuracy;
+  }
+
+  const candidateRank = candidate.avgFirstPassRank ?? Number.POSITIVE_INFINITY;
+  const incumbentRank = incumbent.avgFirstPassRank ?? Number.POSITIVE_INFINITY;
+
+  if (candidateRank !== incumbentRank) {
+    return candidateRank < incumbentRank;
+  }
+
+  return candidate.hits > incumbent.hits;
+};
 
 const loadSolveCacheEntries = async (pairCount: number) => {
   const cachePath = join(process.cwd(), `solve-cache-${pairCount}.json`);
@@ -412,8 +435,10 @@ const writePartialResults = async (
   topK: number,
   maxProbeRank: number,
   epochHistory: EpochMetrics[],
-  weights: WeightVector,
-  finalEvaluation?: EvaluationMetrics,
+  latestWeights: WeightVector,
+  latestEvaluation?: EvaluationMetrics,
+  bestWeights?: WeightVector,
+  bestEvaluation?: EvaluationMetrics,
 ) => {
   const payload = {
     pairCount,
@@ -421,8 +446,11 @@ const writePartialResults = async (
     topK,
     maxProbeRank,
     epochHistory,
-    finalWeights: weights,
-    ...(finalEvaluation === undefined ? {} : { finalEvaluation }),
+    finalWeights: bestWeights ?? latestWeights,
+    latestWeights,
+    ...(latestEvaluation === undefined ? {} : { latestEvaluation }),
+    ...(bestWeights === undefined ? {} : { bestWeights }),
+    ...(bestEvaluation === undefined ? {} : { bestEvaluation }),
     updatedAt: new Date().toISOString(),
   };
 
@@ -451,6 +479,8 @@ const trainWeights = async (
   const random = createDeterministicRandom(
     getSampleSeed(pairCount, 0x5e11_7d91),
   );
+  let bestWeights: WeightVector = { ...weights };
+  let bestEvaluation: EvaluationMetrics | null = null;
 
   for (let epoch = 1; epoch <= epochs; epoch += 1) {
     shuffleInPlace(shuffledSamples, random);
@@ -550,6 +580,22 @@ const trainWeights = async (
       }
     }
 
+    const evaluation = evaluateWeights(
+      trainingSamples,
+      weights,
+      topK,
+      maxProbeRank,
+      drcCache,
+    );
+
+    if (
+      bestEvaluation === null ||
+      isEvaluationBetter(evaluation, bestEvaluation)
+    ) {
+      bestWeights = { ...weights };
+      bestEvaluation = evaluation;
+    }
+
     const metrics: EpochMetrics = {
       epoch,
       hits,
@@ -563,6 +609,11 @@ const trainWeights = async (
       avgLoss: lossCount > 0 ? accumulatedLoss / lossCount : null,
       drcChecksPerformed: drcStats.performed,
       drcChecksCached: drcStats.cached,
+      evaluationAccuracy: evaluation.accuracy,
+      evaluationAvgFirstPassRank: evaluation.avgFirstPassRank,
+      bestAccuracy: bestEvaluation?.accuracy ?? evaluation.accuracy,
+      bestAvgFirstPassRank:
+        bestEvaluation?.avgFirstPassRank ?? evaluation.avgFirstPassRank,
       weights,
     };
 
@@ -583,6 +634,13 @@ const trainWeights = async (
         `avgLoss=${metrics.avgLoss === null ? "n/a" : metrics.avgLoss.toFixed(4)}`,
         `drcChecked=${metrics.drcChecksPerformed}`,
         `drcCached=${metrics.drcChecksCached}`,
+        `evalAccuracy=${metrics.evaluationAccuracy.toFixed(4)}`,
+        `evalAvgFirstPassRank=${
+          metrics.evaluationAvgFirstPassRank === null
+            ? "n/a"
+            : metrics.evaluationAvgFirstPassRank.toFixed(2)
+        }`,
+        `bestAccuracy=${metrics.bestAccuracy.toFixed(4)}`,
         formatWeights(metrics.weights),
       ].join(" "),
     );
@@ -596,13 +654,19 @@ const trainWeights = async (
         maxProbeRank,
         epochHistory,
         weights,
+        evaluation,
+        bestWeights,
+        bestEvaluation,
       );
     }
   }
 
   return {
-    weights,
+    weights: bestWeights,
     epochHistory,
+    bestEvaluation:
+      bestEvaluation ??
+      evaluateWeights(trainingSamples, bestWeights, topK, maxProbeRank, drcCache),
   };
 };
 
@@ -611,8 +675,8 @@ const evaluateWeights = (
   weights: WeightVector,
   topK: number,
   maxProbeRank: number,
+  drcCache: Map<string, DrcCacheValue> = new Map(),
 ): EvaluationMetrics => {
-  const drcCache = new Map<string, DrcCacheValue>();
   const drcStats = { performed: 0, cached: 0 };
   let hits = 0;
   let firstPassRankTotal = 0;
@@ -695,7 +759,7 @@ const main = async () => {
     `Loaded ${trainingSamples.length} cache samples for pairCount=${pairCount} batchSize=${Math.min(batchSize, trainingSamples.length)} topK=${topK} maxProbeRank=${maxProbeRank} epochs=${epochs}`,
   );
 
-  const { weights, epochHistory } = await trainWeights(
+  const { weights, epochHistory, bestEvaluation } = await trainWeights(
     trainingSamples,
     epochs,
     batchSize,
@@ -707,13 +771,6 @@ const main = async () => {
     pairCount,
   );
 
-  const finalEvaluation = evaluateWeights(
-    trainingSamples,
-    weights,
-    topK,
-    maxProbeRank,
-  );
-
   if (outputJsonPath) {
     await writePartialResults(
       outputJsonPath,
@@ -723,20 +780,22 @@ const main = async () => {
       maxProbeRank,
       epochHistory,
       weights,
-      finalEvaluation,
+      bestEvaluation,
+      weights,
+      bestEvaluation,
     );
   }
 
   console.log("");
   console.log(`Final Weights: ${formatWeights(weights)}`);
   console.log(
-    `Final Accuracy: ${finalEvaluation.hits}/${finalEvaluation.totalSamples} (${finalEvaluation.accuracy.toFixed(4)})`,
+    `Final Accuracy: ${bestEvaluation.hits}/${bestEvaluation.totalSamples} (${bestEvaluation.accuracy.toFixed(4)})`,
   );
   console.log(
     `Final AvgFirstPassRank: ${
-      finalEvaluation.avgFirstPassRank === null
+      bestEvaluation.avgFirstPassRank === null
         ? "n/a"
-        : finalEvaluation.avgFirstPassRank.toFixed(2)
+        : bestEvaluation.avgFirstPassRank.toFixed(2)
     }`,
   );
 };
