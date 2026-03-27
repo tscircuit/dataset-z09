@@ -32,6 +32,7 @@ type ForceElementBase = {
 type SegmentForceElement = ForceElementBase & {
   kind: "segment";
   z: number;
+  passive: boolean;
   startNodeIndex: number;
   endNodeIndex: number;
   start: Vector;
@@ -81,20 +82,26 @@ export type ForceImproveResult = {
 };
 
 export const TARGET_CLEARANCE = 0.1;
+export const VIA_DIAMETER = 0.3;
+export const VIA_RADIUS = VIA_DIAMETER / 2;
+export const VIA_SEGMENT_TARGET_CLEARANCE = TARGET_CLEARANCE + VIA_RADIUS;
 export const VIA_VIA_REPULSION_STRENGTH = 0.034;
-export const VIA_SEGMENT_REPULSION_STRENGTH = 0.05;
+export const VIA_SEGMENT_REPULSION_STRENGTH = 0.18;
 export const SEGMENT_SEGMENT_REPULSION_STRENGTH = 0.044;
 export const REPULSION_TAIL_RATIO = 0.08;
 export const REPULSION_FALLOFF = 18;
 export const INTERSECTION_FORCE_BOOST = 3.5;
+export const VIA_SEGMENT_INTERSECTION_FORCE_BOOST = 12;
 export const BORDER_REPULSION_STRENGTH = 0.03;
 export const BORDER_REPULSION_TAIL_RATIO = 0.08;
 export const BORDER_REPULSION_FALLOFF = 20;
 export const SHAPE_RESTORE_STRENGTH = 0.14;
 export const PATH_SMOOTHING_STRENGTH = 0.22;
 export const CLEARANCE_PROJECTION_RATIO = 0.9;
+export const VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO = 1.35;
 export const CLEARANCE_PROJECTION_PASSES = 3;
 export const MAX_CLEARANCE_CORRECTION = 0.02;
+export const VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER = 3;
 export const FINAL_CLEARANCE_PROJECTION_PASSES = 8;
 export const FINAL_MAX_CLEARANCE_CORRECTION = 0.03;
 export const STEP_SIZE = 0.85;
@@ -176,16 +183,18 @@ const getClearanceForceMagnitude = (
   strength: number,
   tailRatio: number,
   falloff: number,
+  intersectionBoost = INTERSECTION_FORCE_BOOST,
+  targetClearance = TARGET_CLEARANCE,
 ) => {
   const clampedDistance = Math.max(distance, 0);
-  const normalizedDistance = clampedDistance / TARGET_CLEARANCE;
+  const normalizedDistance = clampedDistance / targetClearance;
 
   if (normalizedDistance < 1) {
     const penetration = 1 - normalizedDistance;
     return (
       strength *
       Math.pow(penetration, 3) *
-      (1 + penetration * INTERSECTION_FORCE_BOOST)
+      (1 + penetration * intersectionBoost)
     );
   }
 
@@ -266,6 +275,8 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
       const routePoint = routePointIndex === undefined
         ? undefined
         : mutableRoute.route.route[routePointIndex];
+      const isTerminalSegment =
+        nodeIndex === 0 || nodeIndex === mutableRoute.nodes.length - 2;
 
       if (!nextNode || !routePoint) continue;
       if (
@@ -280,6 +291,7 @@ const buildForceElements = (routes: MutableRoute[]): ForceElement[] => {
         routeIndex,
         rootConnectionName: mutableRoute.rootConnectionName,
         z: routePoint.z,
+        passive: isTerminalSegment,
         startNodeIndex: nodeIndex,
         endNodeIndex: nodeIndex + 1,
         start: { x: node.x, y: node.y },
@@ -533,6 +545,10 @@ const getBorderForce = (
   element: ForceElement,
   stepDecay: number,
 ): Vector => {
+  if (element.kind === "segment" && element.passive) {
+    return { x: 0, y: 0 };
+  }
+
   const minX = sample.center.x - sample.width / 2;
   const maxX = sample.center.x + sample.width / 2;
   const minY = sample.center.y - sample.height / 2;
@@ -608,6 +624,10 @@ const distributeElementForceToNodes = (
       routeForces[element.nodeIndex] ?? { x: 0, y: 0 },
       force,
     );
+    return;
+  }
+
+  if (element.passive) {
     return;
   }
 
@@ -705,6 +725,17 @@ const applyElementForce = (
   element: ForceElement,
   application: ElementForceApplication,
 ) => {
+  if (element.kind === "segment" && element.passive) {
+    distributeElementForceToNodes(
+      mutableRoutes,
+      element,
+      application.force,
+      nodeForces,
+      application.t,
+    );
+    return;
+  }
+
   elementForces[elementIndex] = addVector(
     elementForces[elementIndex] ?? { x: 0, y: 0 },
     application.force,
@@ -782,12 +813,13 @@ const resolveClearanceConstraints = (
             rightElement,
             fallbackSeed,
           );
-          const penetration = TARGET_CLEARANCE - interaction.distance;
+          const penetration =
+            VIA_SEGMENT_TARGET_CLEARANCE - interaction.distance;
           if (penetration <= 0) continue;
 
           const magnitude = Math.min(
-            maxCorrection,
-            penetration * CLEARANCE_PROJECTION_RATIO,
+            maxCorrection * VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER,
+            penetration * VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO,
           );
           const viaCorrection = scaleVector(interaction.direction, magnitude);
           const segmentCorrection = scaleVector(viaCorrection, -1);
@@ -813,14 +845,18 @@ const resolveClearanceConstraints = (
             leftElement,
             fallbackSeed,
           );
-          const penetration = TARGET_CLEARANCE - interaction.distance;
+          const penetration =
+            VIA_SEGMENT_TARGET_CLEARANCE - interaction.distance;
           if (penetration <= 0) continue;
 
           const magnitude = Math.min(
-            maxCorrection,
-            penetration * CLEARANCE_PROJECTION_RATIO,
+            maxCorrection * VIA_SEGMENT_MAX_CLEARANCE_CORRECTION_MULTIPLIER,
+            penetration * VIA_SEGMENT_CLEARANCE_PROJECTION_RATIO,
           );
-          const segmentCorrection = scaleVector(interaction.direction, magnitude);
+          const segmentCorrection = scaleVector(
+            interaction.direction,
+            -magnitude,
+          );
           const viaCorrection = scaleVector(segmentCorrection, -1);
           distributeElementForceToNodes(
             mutableRoutes,
@@ -985,6 +1021,8 @@ export const runForceDirectedImprovement = (
               VIA_SEGMENT_REPULSION_STRENGTH,
               REPULSION_TAIL_RATIO,
               REPULSION_FALLOFF,
+              VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
+              VIA_SEGMENT_TARGET_CLEARANCE,
             ) * stepDecay;
 
           if (magnitude <= 0) continue;
@@ -1022,11 +1060,13 @@ export const runForceDirectedImprovement = (
               VIA_SEGMENT_REPULSION_STRENGTH,
               REPULSION_TAIL_RATIO,
               REPULSION_FALLOFF,
+              VIA_SEGMENT_INTERSECTION_FORCE_BOOST,
+              VIA_SEGMENT_TARGET_CLEARANCE,
             ) * stepDecay;
 
           if (magnitude <= 0) continue;
 
-          const segmentForce = scaleVector(interaction.direction, magnitude);
+          const segmentForce = scaleVector(interaction.direction, -magnitude);
           const viaForce = scaleVector(segmentForce, -1);
           applyElementForce(
             mutableRoutes,
