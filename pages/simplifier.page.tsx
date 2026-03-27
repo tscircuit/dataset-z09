@@ -1,6 +1,7 @@
 import { mergeGraphics } from "graphics-debug";
 import { InteractiveGraphics } from "graphics-debug/react";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { runForceDirectedImprovement } from "../lib/force-improve";
 import { simplifyRoutes } from "../lib/simplify";
 import {
   clampSampleIndex,
@@ -8,6 +9,7 @@ import {
   getSampleRoutes,
 } from "./lib/sample-data";
 import {
+  forceVectorsToGraphicsObject,
   getTotalTraceSegmentCount,
   routesToGraphicsObject,
   sampleToGraphicsObject,
@@ -52,23 +54,38 @@ export default function SimplifierPage() {
 
   const { fileName, sample } = currentEntry;
   const originalRoutes = getSampleRoutes(sample);
-  const simplifiedRoutes = simplifyRoutes(originalRoutes);
+  const baseSimplifiedRoutes = simplifyRoutes(originalRoutes);
+  const [improvedRoutes, setImprovedRoutes] = useState(baseSimplifiedRoutes);
+  const [forceVectors, setForceVectors] = useState<
+    ReturnType<typeof runForceDirectedImprovement>["forceVectors"]
+  >([]);
+  const [simulationSteps, setSimulationSteps] = useState(0);
+
+  useEffect(() => {
+    setImprovedRoutes(baseSimplifiedRoutes);
+    setForceVectors([]);
+    setSimulationSteps(0);
+  }, [fileName]);
+
   const beforeGraphics = mergeGraphics(
     sampleToGraphicsObject(sample),
     routesToGraphicsObject(sample, originalRoutes),
   );
   const afterGraphics = mergeGraphics(
-    sampleToGraphicsObject(sample),
-    routesToGraphicsObject(sample, simplifiedRoutes),
+    mergeGraphics(
+      sampleToGraphicsObject(sample),
+      routesToGraphicsObject(sample, improvedRoutes),
+    ),
+    forceVectorsToGraphicsObject(forceVectors),
   );
 
   const originalSegmentCount = getTotalTraceSegmentCount(originalRoutes);
-  const simplifiedSegmentCount = getTotalTraceSegmentCount(simplifiedRoutes);
+  const improvedSegmentCount = getTotalTraceSegmentCount(improvedRoutes);
   const originalViaCount = originalRoutes.reduce(
     (total, route) => total + route.vias.length,
     0,
   );
-  const simplifiedViaCount = simplifiedRoutes.reduce(
+  const improvedViaCount = improvedRoutes.reduce(
     (total, route) => total + route.vias.length,
     0,
   );
@@ -84,6 +101,13 @@ export default function SimplifierPage() {
     });
   };
 
+  const runSimulation = (totalSteps: number) => {
+    const result = runForceDirectedImprovement(sample, improvedRoutes, totalSteps);
+    setImprovedRoutes(result.routes);
+    setForceVectors(result.forceVectors);
+    setSimulationSteps((currentSteps) => currentSteps + result.stepsCompleted);
+  };
+
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
@@ -95,11 +119,26 @@ export default function SimplifierPage() {
               <p style={descriptionStyle}>
                 The first 100 samples are rendered twice: once with the embedded
                 routes, and once after every route is simplified down to 10
-                trace segments with vias inserted at layer transitions.
+                trace segments, then iteratively improved by a force-directed
+                pass.
               </p>
             </div>
 
             <div style={controlsRowStyle}>
+              <button
+                type="button"
+                onClick={() => runSimulation(1)}
+                style={buttonStyle}
+              >
+                Step
+              </button>
+              <button
+                type="button"
+                onClick={() => runSimulation(100)}
+                style={buttonStyle}
+              >
+                Play
+              </button>
               <button
                 type="button"
                 onClick={() => updateSelectedIndex(selectedIndex - 1)}
@@ -173,27 +212,27 @@ export default function SimplifierPage() {
               <strong>
                 {isPending
                   ? "Loading sample..."
-                  : `${originalRoutes.length} routes simplified`}
+                  : `${originalRoutes.length} routes, ${simulationSteps} force steps`}
               </strong>
             </article>
 
             <article style={statCardStyle}>
               <span>Segments</span>
               <strong>
-                {originalSegmentCount} before / {simplifiedSegmentCount} after
+                {originalSegmentCount} before / {improvedSegmentCount} after
               </strong>
             </article>
 
             <article style={statCardStyle}>
               <span>Vias</span>
               <strong>
-                {originalViaCount} before / {simplifiedViaCount} after
+                {originalViaCount} before / {improvedViaCount} after
               </strong>
             </article>
 
             <article style={statCardStyle}>
-              <span>Sample File</span>
-              <strong>{fileName}</strong>
+              <span>Force Vectors</span>
+              <strong>{forceVectors.length}</strong>
             </article>
           </div>
         </section>
@@ -210,7 +249,7 @@ export default function SimplifierPage() {
           <article style={viewerCardStyle}>
             <div style={viewerPanelHeaderStyle}>
               <h2 style={viewerPanelTitleStyle}>After</h2>
-              <span>Each route reduced to 10 trace segments.</span>
+              <span>{fileName} with force vectors shown in magenta.</span>
             </div>
             <InteractiveGraphics graphics={afterGraphics} height={640} />
           </article>

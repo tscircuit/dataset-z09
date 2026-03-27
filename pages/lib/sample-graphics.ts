@@ -1,4 +1,8 @@
 import type { GraphicsObject } from "graphics-debug";
+import {
+  FORCE_VECTOR_DISPLAY_MULTIPLIER,
+  type ForceVector,
+} from "../../lib/force-improve";
 import type {
   DatasetSample,
   HighDensityIntraNodeRoute,
@@ -184,3 +188,29 @@ export const getTraceSegmentCount = (route: HighDensityIntraNodeRoute) => {
 export const getTotalTraceSegmentCount = (
   routes: HighDensityIntraNodeRoute[],
 ) => routes.reduce((total, route) => total + getTraceSegmentCount(route), 0);
+
+export const forceVectorsToGraphicsObject = (
+  forceVectors: ForceVector[],
+): GraphicsObject => ({
+  coordinateSystem: "cartesian",
+  title: "Force vectors",
+  lines: forceVectors
+    .filter(({ dx, dy }) => Math.hypot(dx, dy) > 1e-5)
+    .map((forceVector) => ({
+      points: [
+        { x: forceVector.x, y: forceVector.y },
+        {
+          x:
+            forceVector.x +
+            forceVector.dx * FORCE_VECTOR_DISPLAY_MULTIPLIER,
+          y:
+            forceVector.y +
+            forceVector.dy * FORCE_VECTOR_DISPLAY_MULTIPLIER,
+        },
+      ],
+      strokeColor: "#ff00aa",
+      strokeWidth: 0.03,
+      label: `${forceVector.rootConnectionName} ${forceVector.kind} force`,
+      layer: "force-vectors",
+    })),
+});
