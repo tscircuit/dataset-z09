@@ -1,7 +1,4 @@
-import type {
-  DatasetSample,
-  HighDensityIntraNodeRoute,
-} from "../../lib/types";
+import type { DatasetSample, HighDensityIntraNodeRoute } from "../../lib/types";
 
 export type DatasetSampleRecord = DatasetSample & {
   solvedRoutes?: HighDensityIntraNodeRoute[] | null;
@@ -13,7 +10,7 @@ export type DatasetSampleEntry = {
 };
 
 const sampleModules = import.meta.glob<DatasetSampleRecord>(
-  "../../samples/sample0000[0-9][0-9].json",
+  "../../direct-out-samples/sample0000[0-9][0-9].json",
   {
     eager: true,
     import: "default",

@@ -1,7 +1,7 @@
 import { test } from "bun:test";
+import sample from "../direct-out-samples/sample000001.json";
 import { runForceDirectedImprovement } from "../lib/force-improve";
 import { simplifyRoutes } from "../lib/simplify";
-import sample from "../samples/sample000001.json";
 
 const getBounds = () => ({
   minX: sample.center.x - sample.width / 2,
@@ -65,8 +65,7 @@ test("force vectors are emitted for points and vias only", () => {
   const routes = simplifyRoutes(sample.solution ?? []);
   const result = runForceDirectedImprovement(sample, routes, 1);
   const invalidKinds = result.forceVectors.filter(
-    (forceVector) =>
-      forceVector.kind !== "point" && forceVector.kind !== "via",
+    (forceVector) => forceVector.kind !== "point" && forceVector.kind !== "via",
   );
 
   if (invalidKinds.length > 0) {

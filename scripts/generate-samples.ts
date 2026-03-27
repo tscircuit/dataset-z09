@@ -8,6 +8,7 @@ import {
   scaleNodeWithPortPoints,
   stringifyWithFixedNumbers,
 } from "../lib/generator";
+import { DIRECT_OUT_SAMPLES_DIR_NAME } from "../lib/sample-directories";
 import type {
   DatasetSample,
   HighDensityIntraNodeRoute,
@@ -56,8 +57,13 @@ const parseWorkerAssignment = (argv: string[]): WorkerAssignment | null => {
     throw new Error(`Invalid --worker value: ${rawValue ?? "(missing)"}`);
   }
 
-  const workerNumber = Number.parseInt(match[1]!, 10);
-  const workerCount = Number.parseInt(match[2]!, 10);
+  const [, workerNumberRaw, workerCountRaw] = match;
+  if (!workerNumberRaw || !workerCountRaw) {
+    throw new Error(`Invalid --worker value: ${rawValue ?? "(missing)"}`);
+  }
+
+  const workerNumber = Number.parseInt(workerNumberRaw, 10);
+  const workerCount = Number.parseInt(workerCountRaw, 10);
 
   if (
     !Number.isFinite(workerNumber) ||
@@ -299,7 +305,9 @@ const removeExtraSamples = async (
 ) => {
   const expectedFileNames = new Set(
     Array.from({ length: sampleCount }, (_, index) => index)
-      .filter((sampleIndex) => isAssignedToWorker(sampleIndex, workerAssignment))
+      .filter((sampleIndex) =>
+        isAssignedToWorker(sampleIndex, workerAssignment),
+      )
       .map((sampleIndex) => createSampleFileName(sampleIndex)),
   );
   const existingFiles = await readdir(samplesDir);
@@ -313,7 +321,10 @@ const removeExtraSamples = async (
             const sampleMatch = fileName.match(/^sample(\d{6})\.json$/);
             if (!sampleMatch) return false;
 
-            const sampleIndex = Number.parseInt(sampleMatch[1]!, 10);
+            const [, sampleIndexRaw] = sampleMatch;
+            if (!sampleIndexRaw) return false;
+
+            const sampleIndex = Number.parseInt(sampleIndexRaw, 10);
             return (
               isAssignedToWorker(sampleIndex, workerAssignment) &&
               !expectedFileNames.has(fileName)
@@ -329,7 +340,7 @@ const main = async () => {
   const sampleCount = parseSampleCount(argv);
   const resume = parseResumeFlag(argv);
   const workerAssignment = parseWorkerAssignment(argv);
-  const samplesDir = join(process.cwd(), "samples");
+  const samplesDir = join(process.cwd(), DIRECT_OUT_SAMPLES_DIR_NAME);
 
   await mkdir(samplesDir, { recursive: true });
   if (!resume) {

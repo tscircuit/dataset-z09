@@ -1,7 +1,10 @@
-import { readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-
-const SAMPLE_FILE_PATTERN = /^sample\d{6}\.json$/;
+import {
+  DIRECT_OUT_SAMPLES_DIR_NAME,
+  SAMPLE_FILE_PATTERN,
+  SIMPLIFIED_SAMPLES_DIR_NAME,
+} from "../lib/sample-directories";
 const FIRST_100_SAMPLE_COUNT = 100;
 
 const formatNumber = (value: number) => {
@@ -42,10 +45,11 @@ const stringifyCompact = (value: unknown): string => {
 };
 
 const createSamplesModule = (sampleFileNames: string[]) => {
-  const bindings = sampleFileNames.map((fileName) => fileName.replace(".json", ""));
+  const bindings = sampleFileNames.map((fileName) =>
+    fileName.replace(".json", ""),
+  );
   const importLines = sampleFileNames.map(
-    (fileName, index) =>
-      `import ${bindings[index]} from "./${fileName}";`,
+    (fileName, index) => `import ${bindings[index]} from "./${fileName}";`,
   );
 
   return `${importLines.join("\n")}
@@ -59,7 +63,9 @@ export default samples;
 };
 
 const createSamplesDeclarationFile = (sampleFileNames: string[]) => {
-  const bindings = sampleFileNames.map((fileName) => fileName.replace(".json", ""));
+  const bindings = sampleFileNames.map((fileName) =>
+    fileName.replace(".json", ""),
+  );
 
   return `import type { DatasetSample } from "../lib/types";
 
@@ -73,8 +79,9 @@ export default samples;
 `;
 };
 
-const main = async () => {
-  const samplesDir = join(process.cwd(), "samples");
+const serializeSamplesDir = async (samplesDirName: string) => {
+  const samplesDir = join(process.cwd(), samplesDirName);
+  await mkdir(samplesDir, { recursive: true });
   const fileNames = (await readdir(samplesDir))
     .filter((fileName) => SAMPLE_FILE_PATTERN.test(fileName))
     .sort();
@@ -100,8 +107,13 @@ const main = async () => {
   );
 
   console.log(
-    `Serialized ${fileNames.length} samples and generated index/first100 JS plus declarations`,
+    `Serialized ${fileNames.length} samples in ${samplesDirName} and generated index/first100 JS plus declarations`,
   );
+};
+
+const main = async () => {
+  await serializeSamplesDir(DIRECT_OUT_SAMPLES_DIR_NAME);
+  await serializeSamplesDir(SIMPLIFIED_SAMPLES_DIR_NAME);
 };
 
 main().catch((error) => {
