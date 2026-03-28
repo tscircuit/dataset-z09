@@ -39,4 +39,4 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 tscircuit-autorouter
 high-density-a01
 
-solve-cache*
+# solve-cache*
