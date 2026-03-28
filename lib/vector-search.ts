@@ -3,6 +3,18 @@ export type SampleRawVecIndexEntry = {
   vecRaw: number[];
 };
 
+export type CanonicalRawVecFeatures = {
+  canonicalVec: number[];
+  headerLength: number;
+  ratio: number;
+  sameZIntersections: number;
+  differentZIntersections: number;
+  entryExitZChanges: number;
+  zValues: Uint8Array;
+  xyValues: Float64Array;
+  zSignature: string;
+};
+
 type RawVecPoint = {
   angle: number;
   z: number;
@@ -20,12 +32,12 @@ const RAW_VEC_HEADER_LENGTH = 4;
 const RAW_VEC_PAIR_COMPONENT_COUNT = 8;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 0.0822,
-  sameZIntersections: 0.2378,
-  differentZIntersections: 0.0712,
-  entryExitZChanges: 0.252,
-  z: 0.3123,
-  distWeight: 0.0446,
+  ratio: 0.1815,
+  sameZIntersections: 0.2463,
+  differentZIntersections: 0.1857,
+  entryExitZChanges: 0.2264,
+  z: 0,
+  distWeight: 0.1601,
 } as const;
 
 export const getRawVecHeaderLength = (vector: number[]) => {
@@ -169,6 +181,39 @@ export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
   ];
 };
 
+export const getCanonicalRawVecFeatures = (
+  vector: number[],
+): CanonicalRawVecFeatures => {
+  const canonicalVec = canonicalizeRawVecStructure(vector);
+  const headerLength =
+    getRawVecHeaderLength(canonicalVec) ?? LEGACY_RAW_VEC_HEADER_LENGTH;
+  const zValues: number[] = [];
+  const xyValues: number[] = [];
+
+  for (let index = headerLength; index < canonicalVec.length; index += 4) {
+    zValues.push(canonicalVec[index + 1] ?? 0);
+    xyValues.push(canonicalVec[index + 2] ?? 0, canonicalVec[index + 3] ?? 0);
+  }
+
+  return {
+    canonicalVec,
+    headerLength,
+    ratio: canonicalVec[0] ?? 0,
+    sameZIntersections:
+      headerLength === RAW_VEC_HEADER_LENGTH ? (canonicalVec[1] ?? 0) : 0,
+    differentZIntersections:
+      headerLength === RAW_VEC_HEADER_LENGTH ? (canonicalVec[2] ?? 0) : 0,
+    entryExitZChanges:
+      headerLength === RAW_VEC_HEADER_LENGTH ? (canonicalVec[3] ?? 0) : 0,
+    zValues: Uint8Array.from(zValues),
+    xyValues: Float64Array.from(xyValues),
+    zSignature: zValues.join(""),
+  };
+};
+
+export const getVectorZSignature = (vector: number[]) =>
+  getCanonicalRawVecFeatures(vector).zSignature;
+
 export const applyVectorWeights = (vector: number[]): number[] =>
   vector.map((value, index) => {
     if (index === 0) {
@@ -223,38 +268,27 @@ export const getVectorDistance = (
     return Number.POSITIVE_INFINITY;
   }
 
-  const left = canonicalizeRawVecStructure(leftVector);
-  const right = canonicalizeRawVecStructure(rightVector);
-  const headerLength =
-    getRawVecHeaderLength(left) ?? LEGACY_RAW_VEC_HEADER_LENGTH;
-  const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
+  const left = getCanonicalRawVecFeatures(leftVector);
+  const right = getCanonicalRawVecFeatures(rightVector);
+  const ratioDelta = left.ratio - right.ratio;
   const sameZIntersectionsDelta =
-    headerLength === RAW_VEC_HEADER_LENGTH
-      ? (left[1] ?? 0) - (right[1] ?? 0)
-      : 0;
+    left.sameZIntersections - right.sameZIntersections;
   const differentZIntersectionsDelta =
-    headerLength === RAW_VEC_HEADER_LENGTH
-      ? (left[2] ?? 0) - (right[2] ?? 0)
-      : 0;
+    left.differentZIntersections - right.differentZIntersections;
   const entryExitZChangesDelta =
-    headerLength === RAW_VEC_HEADER_LENGTH
-      ? (left[3] ?? 0) - (right[3] ?? 0)
-      : 0;
+    left.entryExitZChanges - right.entryExitZChanges;
 
   let zDistance = 0;
   let planarDistance = 0;
 
-  for (let index = headerLength; index < left.length; index += 4) {
-    const leftZ = left[index + 1] ?? 0;
-    const rightZ = right[index + 1] ?? 0;
-    const leftX = left[index + 2] ?? 0;
-    const rightX = right[index + 2] ?? 0;
-    const leftY = left[index + 3] ?? 0;
-    const rightY = right[index + 3] ?? 0;
-
-    const zDelta = leftZ - rightZ;
-    const xDelta = leftX - rightX;
-    const yDelta = leftY - rightY;
+  for (let pointIndex = 0; pointIndex < left.zValues.length; pointIndex += 1) {
+    const zDelta =
+      (left.zValues[pointIndex] ?? 0) - (right.zValues[pointIndex] ?? 0);
+    const xyIndex = pointIndex * 2;
+    const xDelta =
+      (left.xyValues[xyIndex] ?? 0) - (right.xyValues[xyIndex] ?? 0);
+    const yDelta =
+      (left.xyValues[xyIndex + 1] ?? 0) - (right.xyValues[xyIndex + 1] ?? 0);
 
     zDistance += zDelta * zDelta;
     planarDistance += xDelta * xDelta + yDelta * yDelta;
@@ -272,6 +306,49 @@ export const getVectorDistance = (
         entryExitZChangesDelta *
         VECTOR_DISTANCE_WEIGHTS.entryExitZChanges +
       zDistance * VECTOR_DISTANCE_WEIGHTS.z +
+      planarDistance * VECTOR_DISTANCE_WEIGHTS.distWeight,
+  );
+};
+
+export const getVectorDistanceIgnoringZ = (
+  leftVector: number[],
+  rightVector: number[],
+): number => {
+  if (leftVector.length !== rightVector.length) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const left = getCanonicalRawVecFeatures(leftVector);
+  const right = getCanonicalRawVecFeatures(rightVector);
+  const ratioDelta = left.ratio - right.ratio;
+  const sameZIntersectionsDelta =
+    left.sameZIntersections - right.sameZIntersections;
+  const differentZIntersectionsDelta =
+    left.differentZIntersections - right.differentZIntersections;
+  const entryExitZChangesDelta =
+    left.entryExitZChanges - right.entryExitZChanges;
+  let planarDistance = 0;
+
+  for (let pointIndex = 0; pointIndex < left.zValues.length; pointIndex += 1) {
+    const xyIndex = pointIndex * 2;
+    const xDelta =
+      (left.xyValues[xyIndex] ?? 0) - (right.xyValues[xyIndex] ?? 0);
+    const yDelta =
+      (left.xyValues[xyIndex + 1] ?? 0) - (right.xyValues[xyIndex + 1] ?? 0);
+    planarDistance += xDelta * xDelta + yDelta * yDelta;
+  }
+
+  return Math.sqrt(
+    ratioDelta * ratioDelta * VECTOR_DISTANCE_WEIGHTS.ratio +
+      sameZIntersectionsDelta *
+        sameZIntersectionsDelta *
+        VECTOR_DISTANCE_WEIGHTS.sameZIntersections +
+      differentZIntersectionsDelta *
+        differentZIntersectionsDelta *
+        VECTOR_DISTANCE_WEIGHTS.differentZIntersections +
+      entryExitZChangesDelta *
+        entryExitZChangesDelta *
+        VECTOR_DISTANCE_WEIGHTS.entryExitZChanges +
       planarDistance * VECTOR_DISTANCE_WEIGHTS.distWeight,
   );
 };

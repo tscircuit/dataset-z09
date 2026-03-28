@@ -13,8 +13,8 @@ import {
 import type { DatasetSample } from "../lib/types";
 import { computeVecRaw } from "../lib/vec-raw";
 import {
-  canonicalizeRawVecStructure,
-  getRawVecHeaderLength,
+  type CanonicalRawVecFeatures,
+  getCanonicalRawVecFeatures,
 } from "../lib/vector-search";
 
 const DEFAULT_PAIR_COUNT = 2;
@@ -26,7 +26,7 @@ const DEFAULT_LEARNING_RATE = 0.05;
 const DEFAULT_MARGIN_TEMPERATURE = 0.1;
 const WEIGHT_REGULARIZATION = 0.001;
 const UPDATE_EPSILON = 1e-9;
-const WEIGHT_COMPONENT_COUNT = 6;
+const WEIGHT_COMPONENT_COUNT = 5;
 const UNIFORM_WEIGHT = 1 / WEIGHT_COMPONENT_COUNT;
 
 type WeightVector = {
@@ -34,7 +34,6 @@ type WeightVector = {
   sameZIntersections: number;
   differentZIntersections: number;
   entryExitZChanges: number;
-  z: number;
   distWeight: number;
 };
 
@@ -43,7 +42,6 @@ type WeightLogits = {
   sameZIntersections: number;
   differentZIntersections: number;
   entryExitZChanges: number;
-  z: number;
   distWeight: number;
 };
 
@@ -52,7 +50,6 @@ type DistanceComponents = {
   sameZIntersections: number;
   differentZIntersections: number;
   entryExitZChanges: number;
-  z: number;
   dist: number;
 };
 
@@ -67,15 +64,14 @@ type TrainingSample = {
   sampleId: string;
   targetEntryIndex: number;
   sample: DatasetSample;
-  vecRaw: number[];
-  canonicalVecRaw: number[];
+  features: CanonicalRawVecFeatures;
 };
 
 type SolveCacheVariant = {
   sourceEntryIndex: number;
   symmetry: SolveCacheCandidate["symmetry"];
   entry: SolveCacheEntry;
-  canonicalVecRaw: number[];
+  features: CanonicalRawVecFeatures;
 };
 
 type ScoredTrainingCandidate = {
@@ -189,7 +185,6 @@ const logitsToWeights = (logits: WeightLogits): WeightVector => {
     logits.sameZIntersections,
     logits.differentZIntersections,
     logits.entryExitZChanges,
-    logits.z,
     logits.distWeight,
   );
   const ratioExp = Math.exp(logits.ratio - maxLogit);
@@ -202,14 +197,12 @@ const logitsToWeights = (logits: WeightLogits): WeightVector => {
   const entryExitZChangesExp = Math.exp(
     logits.entryExitZChanges - maxLogit,
   );
-  const zExp = Math.exp(logits.z - maxLogit);
   const distExp = Math.exp(logits.distWeight - maxLogit);
   const total =
     ratioExp +
     sameZIntersectionsExp +
     differentZIntersectionsExp +
     entryExitZChangesExp +
-    zExp +
     distExp;
 
   return {
@@ -217,7 +210,6 @@ const logitsToWeights = (logits: WeightLogits): WeightVector => {
     sameZIntersections: sameZIntersectionsExp / total,
     differentZIntersections: differentZIntersectionsExp / total,
     entryExitZChanges: entryExitZChangesExp / total,
-    z: zExp / total,
     distWeight: distExp / total,
   };
 };
@@ -228,7 +220,6 @@ const centerLogits = (logits: WeightLogits): WeightLogits => {
       logits.sameZIntersections +
       logits.differentZIntersections +
       logits.entryExitZChanges +
-      logits.z +
       logits.distWeight) /
     WEIGHT_COMPONENT_COUNT;
 
@@ -237,41 +228,35 @@ const centerLogits = (logits: WeightLogits): WeightLogits => {
     sameZIntersections: logits.sameZIntersections - mean,
     differentZIntersections: logits.differentZIntersections - mean,
     entryExitZChanges: logits.entryExitZChanges - mean,
-    z: logits.z - mean,
     distWeight: logits.distWeight - mean,
   };
 };
 
-const getDistanceComponentsFromCanonicalVectors = (
-  leftVector: number[],
-  rightVector: number[],
+const getDistanceComponents = (
+  left: CanonicalRawVecFeatures,
+  right: CanonicalRawVecFeatures,
 ): DistanceComponents => {
-  if (leftVector.length !== rightVector.length) {
+  if (left.canonicalVec.length !== right.canonicalVec.length) {
     throw new Error(
-      `Cannot compare vecRaw values of different lengths: ${leftVector.length} vs ${rightVector.length}`,
+      `Cannot compare vecRaw values of different lengths: ${left.canonicalVec.length} vs ${right.canonicalVec.length}`,
     );
   }
 
-  const left = leftVector;
-  const right = rightVector;
-  const headerLength = getRawVecHeaderLength(left) ?? 1;
-  const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
+  const ratioDelta = left.ratio - right.ratio;
   const sameZIntersectionsDelta =
-    headerLength >= 4 ? (left[1] ?? 0) - (right[1] ?? 0) : 0;
+    left.sameZIntersections - right.sameZIntersections;
   const differentZIntersectionsDelta =
-    headerLength >= 4 ? (left[2] ?? 0) - (right[2] ?? 0) : 0;
+    left.differentZIntersections - right.differentZIntersections;
   const entryExitZChangesDelta =
-    headerLength >= 4 ? (left[3] ?? 0) - (right[3] ?? 0) : 0;
-
-  let z = 0;
+    left.entryExitZChanges - right.entryExitZChanges;
   let dist = 0;
 
-  for (let index = headerLength; index < left.length; index += 4) {
-    const zDelta = (left[index + 1] ?? 0) - (right[index + 1] ?? 0);
-    const xDelta = (left[index + 2] ?? 0) - (right[index + 2] ?? 0);
-    const yDelta = (left[index + 3] ?? 0) - (right[index + 3] ?? 0);
-
-    z += zDelta * zDelta;
+  for (let pointIndex = 0; pointIndex < left.zValues.length; pointIndex += 1) {
+    const xyIndex = pointIndex * 2;
+    const xDelta =
+      (left.xyValues[xyIndex] ?? 0) - (right.xyValues[xyIndex] ?? 0);
+    const yDelta =
+      (left.xyValues[xyIndex + 1] ?? 0) - (right.xyValues[xyIndex + 1] ?? 0);
     dist += xDelta * xDelta + yDelta * yDelta;
   }
 
@@ -281,7 +266,6 @@ const getDistanceComponentsFromCanonicalVectors = (
     differentZIntersections:
       differentZIntersectionsDelta * differentZIntersectionsDelta,
     entryExitZChanges: entryExitZChangesDelta * entryExitZChangesDelta,
-    z,
     dist,
   };
 };
@@ -294,7 +278,6 @@ const getWeightedDistance = (
   components.sameZIntersections * weights.sameZIntersections +
   components.differentZIntersections * weights.differentZIntersections +
   components.entryExitZChanges * weights.entryExitZChanges +
-  components.z * weights.z +
   components.dist * weights.distWeight;
 
 const formatWeights = (weights: WeightVector) =>
@@ -303,7 +286,6 @@ const formatWeights = (weights: WeightVector) =>
     `sameZIntersections=${weights.sameZIntersections.toFixed(4)}`,
     `differentZIntersections=${weights.differentZIntersections.toFixed(4)}`,
     `entryExitZChanges=${weights.entryExitZChanges.toFixed(4)}`,
-    `z=${weights.z.toFixed(4)}`,
     `distWeight=${weights.distWeight.toFixed(4)}`,
   ].join(" ");
 
@@ -369,8 +351,7 @@ const createTrainingSamples = (entries: SolveCacheEntry[]) =>
       sampleId: sample.capacityMeshNodeId,
       targetEntryIndex,
       sample,
-      vecRaw,
-      canonicalVecRaw: canonicalizeRawVecStructure(vecRaw),
+      features: getCanonicalRawVecFeatures(vecRaw),
     } satisfies TrainingSample;
   });
 
@@ -383,10 +364,23 @@ const createSolveCacheVariants = (entries: SolveCacheEntry[]) =>
         sourceEntryIndex,
         symmetry,
         entry,
-        canonicalVecRaw: canonicalizeRawVecStructure(entry.vecRaw),
+        features: getCanonicalRawVecFeatures(entry.vecRaw),
       };
     }),
   );
+
+const createVariantsByZSignature = (variants: SolveCacheVariant[]) => {
+  const variantsByZSignature = new Map<string, SolveCacheVariant[]>();
+
+  for (const variant of variants) {
+    const existingVariants =
+      variantsByZSignature.get(variant.features.zSignature) ?? [];
+    existingVariants.push(variant);
+    variantsByZSignature.set(variant.features.zSignature, existingVariants);
+  }
+
+  return variantsByZSignature;
+};
 
 const getDrcCacheKey = (
   targetEntryIndex: number,
@@ -476,10 +470,13 @@ const siftDownMaxHeap = (heap: ScoredTrainingCandidate[], index: number) => {
 
 const rankCandidates = (
   trainingSample: TrainingSample,
-  variants: SolveCacheVariant[],
+  variantsByZSignature: Map<string, SolveCacheVariant[]>,
   weights: WeightVector,
   limit: number,
 ) => {
+  const variants =
+    variantsByZSignature.get(trainingSample.features.zSignature) ?? [];
+
   if (limit <= 0 || variants.length === 0) {
     return [];
   }
@@ -491,13 +488,15 @@ const rankCandidates = (
       continue;
     }
 
-    if (variant.entry.vecRaw.length !== trainingSample.vecRaw.length) {
+    if (
+      variant.entry.vecRaw.length !== trainingSample.features.canonicalVec.length
+    ) {
       continue;
     }
 
-    const components = getDistanceComponentsFromCanonicalVectors(
-      trainingSample.canonicalVecRaw,
-      variant.canonicalVecRaw,
+    const components = getDistanceComponents(
+      trainingSample.features,
+      variant.features,
     );
     const distance = getWeightedDistance(components, weights);
     if (topCandidates.length < limit) {
@@ -600,14 +599,12 @@ const getSampleGradientAndLoss = (
 ) => {
   if (negativeCandidates.length === 0) {
     return {
-      gradient: [0, 0, 0, 0, 0, 0] as [number, number, number, number, number, number],
+      gradient: [0, 0, 0, 0, 0] as [number, number, number, number, number],
       loss: 0,
     };
   }
 
-  const gradient: [number, number, number, number, number, number] = [
-    0, 0, 0, 0, 0, 0,
-  ];
+  const gradient: [number, number, number, number, number] = [0, 0, 0, 0, 0];
   let loss = 0;
 
   const pairWeight = 1 / negativeCandidates.length;
@@ -625,7 +622,6 @@ const getSampleGradientAndLoss = (
       entryExitZChanges:
         negativeCandidate.components.entryExitZChanges -
         positiveCandidate.components.entryExitZChanges,
-      z: negativeCandidate.components.z - positiveCandidate.components.z,
       dist:
         negativeCandidate.components.dist - positiveCandidate.components.dist,
     };
@@ -634,7 +630,6 @@ const getSampleGradientAndLoss = (
       sameZIntersections: weights.sameZIntersections,
       differentZIntersections: weights.differentZIntersections,
       entryExitZChanges: weights.entryExitZChanges,
-      z: weights.z,
       distWeight: weights.distWeight,
     });
     const gradientScale =
@@ -644,8 +639,7 @@ const getSampleGradientAndLoss = (
     gradient[1] += gradientScale * difference.sameZIntersections;
     gradient[2] += gradientScale * difference.differentZIntersections;
     gradient[3] += gradientScale * difference.entryExitZChanges;
-    gradient[4] += gradientScale * difference.z;
-    gradient[5] += gradientScale * difference.dist;
+    gradient[4] += gradientScale * difference.dist;
     loss += pairWeight * getLogisticLoss(margin, temperature);
   }
 
@@ -686,7 +680,7 @@ const writePartialResults = async (
 
 const trainWeights = async (
   trainingSamples: TrainingSample[],
-  variants: SolveCacheVariant[],
+  variantsByZSignature: Map<string, SolveCacheVariant[]>,
   epochs: number,
   batchSize: number,
   topK: number,
@@ -701,7 +695,6 @@ const trainWeights = async (
     sameZIntersections: 0,
     differentZIntersections: 0,
     entryExitZChanges: 0,
-    z: 0,
     distWeight: 0,
   };
   let weights = logitsToWeights(logits);
@@ -737,8 +730,8 @@ const trainWeights = async (
         batchStart,
         Math.min(batchStart + batchSize, shuffledSamples.length),
       );
-      const batchGradient: [number, number, number, number, number, number] = [
-        0, 0, 0, 0, 0, 0,
+      const batchGradient: [number, number, number, number, number] = [
+        0, 0, 0, 0, 0,
       ];
       let batchGradientSamples = 0;
       const completedBatches = Math.floor(batchStart / batchSize);
@@ -753,7 +746,7 @@ const trainWeights = async (
       for (const trainingSample of epochBatch) {
         const rankedCandidates = rankCandidates(
           trainingSample,
-          variants,
+          variantsByZSignature,
           weights,
           maxProbeRank,
         );
@@ -789,7 +782,6 @@ const trainWeights = async (
         batchGradient[2] += sampleGradient.gradient[2];
         batchGradient[3] += sampleGradient.gradient[3];
         batchGradient[4] += sampleGradient.gradient[4];
-        batchGradient[5] += sampleGradient.gradient[5];
         accumulatedLoss += sampleGradient.loss;
         lossCount += 1;
         gradientSamples += 1;
@@ -800,7 +792,7 @@ const trainWeights = async (
         continue;
       }
 
-      const averagedGradient: [number, number, number, number, number, number] = [
+      const averagedGradient: [number, number, number, number, number] = [
         batchGradient[0] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.ratio - UNIFORM_WEIGHT),
         batchGradient[1] / batchGradientSamples +
@@ -816,8 +808,6 @@ const trainWeights = async (
             WEIGHT_REGULARIZATION *
             (weights.entryExitZChanges - UNIFORM_WEIGHT),
         batchGradient[4] / batchGradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.z - UNIFORM_WEIGHT),
-        batchGradient[5] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.distWeight - UNIFORM_WEIGHT),
       ];
 
@@ -826,8 +816,7 @@ const trainWeights = async (
         weights.sameZIntersections * averagedGradient[1] +
         weights.differentZIntersections * averagedGradient[2] +
         weights.entryExitZChanges * averagedGradient[3] +
-        weights.z * averagedGradient[4] +
-        weights.distWeight * averagedGradient[5];
+        weights.distWeight * averagedGradient[4];
       const logitsGradient: WeightLogits = {
         ratio: weights.ratio * (averagedGradient[0] - gradientDotWeights),
         sameZIntersections:
@@ -839,9 +828,8 @@ const trainWeights = async (
         entryExitZChanges:
           weights.entryExitZChanges *
           (averagedGradient[3] - gradientDotWeights),
-        z: weights.z * (averagedGradient[4] - gradientDotWeights),
         distWeight:
-          weights.distWeight * (averagedGradient[5] - gradientDotWeights),
+          weights.distWeight * (averagedGradient[4] - gradientDotWeights),
       };
       const nextLogits = centerLogits({
         ratio: logits.ratio - epochLearningRate * logitsGradient.ratio,
@@ -854,7 +842,6 @@ const trainWeights = async (
         entryExitZChanges:
           logits.entryExitZChanges -
           epochLearningRate * logitsGradient.entryExitZChanges,
-        z: logits.z - epochLearningRate * logitsGradient.z,
         distWeight:
           logits.distWeight - epochLearningRate * logitsGradient.distWeight,
       });
@@ -870,7 +857,6 @@ const trainWeights = async (
         Math.abs(
           nextWeights.entryExitZChanges - weights.entryExitZChanges,
         ) +
-        Math.abs(nextWeights.z - weights.z) +
         Math.abs(nextWeights.distWeight - weights.distWeight);
 
       logits = nextLogits;
@@ -894,7 +880,7 @@ const trainWeights = async (
 
     const evaluation = evaluateWeights(
       trainingSamples,
-      variants,
+      variantsByZSignature,
       weights,
       topK,
       maxProbeRank,
@@ -981,7 +967,7 @@ const trainWeights = async (
       bestEvaluation ??
       evaluateWeights(
         trainingSamples,
-        variants,
+        variantsByZSignature,
         bestWeights,
         topK,
         maxProbeRank,
@@ -992,7 +978,7 @@ const trainWeights = async (
 
 const evaluateWeights = (
   trainingSamples: TrainingSample[],
-  variants: SolveCacheVariant[],
+  variantsByZSignature: Map<string, SolveCacheVariant[]>,
   weights: WeightVector,
   topK: number,
   maxProbeRank: number,
@@ -1006,7 +992,7 @@ const evaluateWeights = (
   for (const trainingSample of trainingSamples) {
     const rankedCandidates = rankCandidates(
       trainingSample,
-      variants,
+      variantsByZSignature,
       weights,
       maxProbeRank,
     );
@@ -1081,14 +1067,15 @@ const main = async () => {
   const entries = await loadSolveCacheEntries(pairCount);
   const trainingSamples = createTrainingSamples(entries);
   const variants = createSolveCacheVariants(entries);
+  const variantsByZSignature = createVariantsByZSignature(variants);
 
   console.log(
-    `Loaded ${trainingSamples.length} cache samples and ${variants.length} symmetry variants for pairCount=${pairCount} batchSize=${Math.min(batchSize, trainingSamples.length)} topK=${topK} maxProbeRank=${maxProbeRank} epochs=${epochs}`,
+    `Loaded ${trainingSamples.length} cache samples and ${variants.length} symmetry variants across ${variantsByZSignature.size} z-signature buckets for pairCount=${pairCount} batchSize=${Math.min(batchSize, trainingSamples.length)} topK=${topK} maxProbeRank=${maxProbeRank} epochs=${epochs}`,
   );
 
   const { weights, epochHistory, bestEvaluation } = await trainWeights(
     trainingSamples,
-    variants,
+    variantsByZSignature,
     epochs,
     batchSize,
     topK,

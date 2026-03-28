@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import {
-  SOLVE_CACHE_SYMMETRIES,
   canonicalizeDatasetSample,
   createSolveCacheEntry,
   createValidatedSolveCacheEntry,
   diagnoseSolveCacheEntryApplication,
+  DIHEDRAL_SYMMETRIES,
   findSolveCacheMatch,
   getSolveCacheCandidates,
   tryApplySolveCacheEntry,
@@ -323,7 +323,7 @@ test("createValidatedSolveCacheEntry rejects routes that still fail drc", () => 
   ).toBeNull();
 });
 
-test("getSolveCacheCandidates expands cache entries across all planar and z-flip symmetries", () => {
+test("getSolveCacheCandidates only returns symmetry variants with matching canonical z signature", () => {
   const sample: DatasetSample = canonicalizeDatasetSample({
     capacityMeshNodeId: "sample-dihedral-count",
     center: { x: 0, y: 0 },
@@ -368,9 +368,9 @@ test("getSolveCacheCandidates expands cache entries across all planar and z-flip
   const cacheEntry = createSolveCacheEntry(sample, sample.solution ?? []);
   const candidates = getSolveCacheCandidates(sample, [cacheEntry]);
 
-  expect(candidates).toHaveLength(SOLVE_CACHE_SYMMETRIES.length);
+  expect(candidates).toHaveLength(DIHEDRAL_SYMMETRIES.length);
   expect(new Set(candidates.map((candidate) => candidate.symmetry))).toEqual(
-    new Set(SOLVE_CACHE_SYMMETRIES),
+    new Set(DIHEDRAL_SYMMETRIES),
   );
 });
 

@@ -14,7 +14,7 @@ import {
 test("canonicalizeVector normalizes by Euclidean magnitude", () => {
   const weightedRatio = 3 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.ratio);
   const weightedAngle = 0;
-  const weightedZ = 1 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.z);
+  const weightedZ = 0;
   const weightedX = 2 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.distWeight);
   const weightedY = 5 * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.distWeight);
   const magnitude = Math.hypot(

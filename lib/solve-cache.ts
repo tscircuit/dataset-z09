@@ -9,7 +9,7 @@ import type {
   PortPoint,
 } from "./types";
 import { computeVecRaw } from "./vec-raw";
-import { getVectorDistance } from "./vector-search";
+import { getVectorDistanceIgnoringZ, getVectorZSignature } from "./vector-search";
 
 type CanonicalPair = {
   canonicalConnectionName: string;
@@ -180,6 +180,7 @@ const symmetryVariantCache = new WeakMap<
   SolveCacheEntry,
   Map<SolveCacheSymmetry, SolveCacheEntry>
 >();
+const solveCacheEntryZSignatureCache = new WeakMap<SolveCacheEntry, string>();
 
 const FLIP_Z_SUFFIX = "+flipZ";
 
@@ -586,6 +587,7 @@ export const getSolveCacheCandidates = (
   entries: SolveCacheEntry[],
 ): SolveCacheCandidate[] => {
   const vecRaw = computeVecRaw(toDatasetSample(targetSample));
+  const targetZSignature = getVectorZSignature(vecRaw);
   const candidates: SolveCacheCandidate[] = [];
 
   for (const sourceEntry of entries) {
@@ -595,11 +597,22 @@ export const getSolveCacheCandidates = (
         continue;
       }
 
+      const entryZSignature =
+        solveCacheEntryZSignatureCache.get(entry) ??
+        getVectorZSignature(entry.vecRaw);
+      if (!solveCacheEntryZSignatureCache.has(entry)) {
+        solveCacheEntryZSignatureCache.set(entry, entryZSignature);
+      }
+
+      if (entryZSignature !== targetZSignature) {
+        continue;
+      }
+
       candidates.push({
         sourceEntry,
         symmetry,
         entry,
-        distance: getVectorDistance(vecRaw, entry.vecRaw),
+        distance: getVectorDistanceIgnoringZ(vecRaw, entry.vecRaw),
       });
     }
   }
