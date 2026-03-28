@@ -4,12 +4,14 @@ import {
   decanonicalizeRoutesForResponse,
   expandEntryIntoWorkerBuckets,
   findBucketMatch,
+  getWorkerBucketFromMemoryCache,
   getBucketKey,
   getSolveWorkerConfig,
   getWorkerBucketRawText,
   mergeEntriesIntoBucket,
   mergeWorkerBucketEntries,
   parseWorkerBucket,
+  setWorkerBucketInMemoryCache,
   solveNodeWithAutorouter,
   upsertValidatedEntryAcrossBuckets,
   validateSolvedEntry,
@@ -81,6 +83,12 @@ const createCacheLookupTimings = (
   bucketParse: bucketParseMs,
   ranking: rankingMs,
   cacheApply: rankingMs,
+});
+
+const toCompactSolveBatchResult = (responseBody: SolveResponseBody) => ({
+  source: responseBody.source,
+  routes: responseBody.routes,
+  ...(responseBody.message ? { message: responseBody.message } : {}),
 });
 
 const solveAgainstLoadedBucket = async ({
@@ -241,29 +249,39 @@ const handleSolveRequest = async (request: Request, env: WorkerEnv) => {
   const config = getSolveWorkerConfig(env);
   const solveRequest = canonicalizeSolveRequest(rawNodeWithPortPoints as never);
 
-  const kvGetStart = performance.now();
-  const rawBucket = await getWorkerBucketRawText(
-    env.SOLVE_CACHE,
-    solveRequest.pairCount,
-    solveRequest.zSignature,
-  );
-  const kvGetEnd = performance.now();
-  const bucketParseStart = performance.now();
-  const bucket = parseWorkerBucket(
-    rawBucket,
-    solveRequest.pairCount,
-    solveRequest.zSignature,
-  );
-  const bucketParseEnd = performance.now();
+  const cachedBucket = getWorkerBucketFromMemoryCache(solveRequest.bucketKey);
+  let kvGetMs = 0;
+  let bucketParseMs = 0;
+  let bucket = cachedBucket;
+
+  if (!bucket) {
+    const kvGetStart = performance.now();
+    const rawBucket = await getWorkerBucketRawText(
+      env.SOLVE_CACHE,
+      solveRequest.pairCount,
+      solveRequest.zSignature,
+    );
+    const kvGetEnd = performance.now();
+    const bucketParseStart = performance.now();
+    bucket = parseWorkerBucket(
+      rawBucket,
+      solveRequest.pairCount,
+      solveRequest.zSignature,
+    );
+    const bucketParseEnd = performance.now();
+    kvGetMs = kvGetEnd - kvGetStart;
+    bucketParseMs = bucketParseEnd - bucketParseStart;
+    setWorkerBucketInMemoryCache(solveRequest.bucketKey, bucket);
+  }
 
   const result = await solveAgainstLoadedBucket({
     solveRequest,
-    bucket,
+    bucket: bucket ?? createEmptyWorkerBucket(solveRequest.pairCount, solveRequest.zSignature),
     env,
     config,
     baseTimingsMs: createCacheLookupTimings(
-      kvGetEnd - kvGetStart,
-      bucketParseEnd - bucketParseStart,
+      kvGetMs,
+      bucketParseMs,
       0,
       performance.now() - totalStart,
     ),
@@ -294,6 +312,7 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
   }
 
   const config = getSolveWorkerConfig(env);
+  const responseMode = requestBody.responseMode ?? "compact";
 
   const canonicalizeStart = performance.now();
   const solveRequests = requestBody.nodesWithPortPoints.map((nodeWithPortPoints) =>
@@ -313,9 +332,28 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
     });
   }
 
+  const bucketMap = new Map<
+    string,
+    ReturnType<typeof parseWorkerBucket>
+  >();
+  const missingBuckets = new Map<
+    string,
+    { pointPairCount: number; zSignature: string }
+  >();
+
+  for (const [bucketKey, bucketMetadata] of uniqueBuckets.entries()) {
+    const cachedBucket = getWorkerBucketFromMemoryCache(bucketKey);
+    if (cachedBucket) {
+      bucketMap.set(bucketKey, cachedBucket);
+      continue;
+    }
+
+    missingBuckets.set(bucketKey, bucketMetadata);
+  }
+
   const kvGetStart = performance.now();
   const rawBucketEntries = await Promise.all(
-    [...uniqueBuckets.entries()].map(async ([bucketKey, bucketMetadata]) => [
+    [...missingBuckets.entries()].map(async ([bucketKey, bucketMetadata]) => [
       bucketKey,
       await getWorkerBucketRawText(
         env.SOLVE_CACHE,
@@ -327,27 +365,21 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
   const kvGetEnd = performance.now();
 
   const bucketParseStart = performance.now();
-  const bucketMap = new Map<
-    string,
-    ReturnType<typeof parseWorkerBucket>
-  >();
-
   for (const entry of rawBucketEntries) {
     const bucketKey = entry[0] as string;
     const rawBucket = entry[1] as string | null;
-    const bucketMetadata = uniqueBuckets.get(bucketKey);
+    const bucketMetadata = missingBuckets.get(bucketKey);
     if (!bucketMetadata) {
       continue;
     }
 
-    bucketMap.set(
-      bucketKey,
-      parseWorkerBucket(
-        rawBucket as string | null,
-        bucketMetadata.pointPairCount,
-        bucketMetadata.zSignature,
-      ),
+    const bucket = parseWorkerBucket(
+      rawBucket,
+      bucketMetadata.pointPairCount,
+      bucketMetadata.zSignature,
     );
+    bucketMap.set(bucketKey, bucket);
+    setWorkerBucketInMemoryCache(bucketKey, bucket);
   }
   const bucketParseEnd = performance.now();
 
@@ -403,6 +435,10 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
           bucketKey,
           mergeWorkerBucketEntries(currentBucket, nextEntries),
         );
+        setWorkerBucketInMemoryCache(
+          bucketKey,
+          bucketMap.get(bucketKey) ?? currentBucket,
+        );
       }
     }
   }
@@ -411,7 +447,10 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
     ok: true,
     count: results.length,
     uniqueBucketCount: uniqueBuckets.size,
-    results,
+    results:
+      responseMode === "full"
+        ? results
+        : results.map((result) => toCompactSolveBatchResult(result)),
     summary: {
       cache: cacheCount,
       solver: solverCount,

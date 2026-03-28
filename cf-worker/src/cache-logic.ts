@@ -33,6 +33,15 @@ const DEFAULT_SOLVER_MAX_ITERATIONS = 250_000;
 const DEFAULT_TRACE_WIDTH = 0.1;
 const DEFAULT_VIA_DIAMETER = 0.3;
 const BUCKET_SCHEMA_VERSION = 1;
+const WORKER_BUCKET_MEMORY_CACHE_TTL_MS = 5 * 60 * 1_000;
+
+const workerBucketMemoryCache = new Map<
+  string,
+  {
+    bucket: WorkerBucket;
+    cachedAt: number;
+  }
+>();
 
 type CanonicalizedRequest = {
   canonicalNodeWithPortPoints: NodeWithPortPoints;
@@ -125,6 +134,30 @@ const getWorkerBucketEntryId = (entry: SolveCacheEntry) =>
 export const getBucketKey = (pointPairCount: number, zSignature: string) =>
   `${pointPairCount}:${zSignature}`;
 
+export const getWorkerBucketFromMemoryCache = (bucketKey: string) => {
+  const cachedEntry = workerBucketMemoryCache.get(bucketKey);
+  if (!cachedEntry) {
+    return null;
+  }
+
+  if (Date.now() - cachedEntry.cachedAt > WORKER_BUCKET_MEMORY_CACHE_TTL_MS) {
+    workerBucketMemoryCache.delete(bucketKey);
+    return null;
+  }
+
+  return cachedEntry.bucket;
+};
+
+export const setWorkerBucketInMemoryCache = (
+  bucketKey: string,
+  bucket: WorkerBucket,
+) => {
+  workerBucketMemoryCache.set(bucketKey, {
+    bucket,
+    cachedAt: Date.now(),
+  });
+};
+
 export const canonicalizeSolveRequest = (
   nodeWithPortPoints: NodeWithPortPoints,
 ): CanonicalizedRequest => {
@@ -194,12 +227,21 @@ export const loadWorkerBucket = async (
   kv: KvNamespaceLike,
   pointPairCount: number,
   zSignature: string,
-) =>
-  parseWorkerBucket(
-    await kv.get(getBucketKey(pointPairCount, zSignature), "text"),
+) => {
+  const bucketKey = getBucketKey(pointPairCount, zSignature);
+  const cachedBucket = getWorkerBucketFromMemoryCache(bucketKey);
+  if (cachedBucket) {
+    return cachedBucket;
+  }
+
+  const bucket = parseWorkerBucket(
+    await kv.get(bucketKey, "text"),
     pointPairCount,
     zSignature,
   );
+  setWorkerBucketInMemoryCache(bucketKey, bucket);
+  return bucket;
+};
 
 export const getWorkerBucketRawText = (
   kv: KvNamespaceLike,
@@ -240,10 +282,12 @@ export const saveWorkerBucket = async (
   kv: KvNamespaceLike,
   bucket: WorkerBucket,
 ) => {
+  const bucketKey = getBucketKey(bucket.pointPairCount, bucket.zSignature);
   await kv.put(
-    getBucketKey(bucket.pointPairCount, bucket.zSignature),
+    bucketKey,
     serializeWorkerBucket(bucket),
   );
+  setWorkerBucketInMemoryCache(bucketKey, bucket);
 };
 
 const insertTopCandidate = (

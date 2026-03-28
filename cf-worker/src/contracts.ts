@@ -44,6 +44,7 @@ export type SolveRequestBody = {
 
 export type SolveBatchRequestBody = {
   nodesWithPortPoints: NodeWithPortPoints[];
+  responseMode?: "compact" | "full";
 };
 
 export type UpsertBucketRequestBody = {
@@ -81,7 +82,13 @@ export type SolveBatchResponseBody = {
   ok: boolean;
   count: number;
   uniqueBucketCount: number;
-  results: SolveResponseBody[];
+  results:
+    | SolveResponseBody[]
+    | Array<{
+        source: "cache" | "solver" | "none";
+        routes: HighDensityIntraNodeRoute[] | null;
+        message?: string;
+      }>;
   summary: {
     cache: number;
     solver: number;

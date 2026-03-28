@@ -1,6 +1,7 @@
 import { canonicalizeDatasetSample } from "../../lib/solve-cache";
 import { createMatchSampleWithPairCount } from "../../lib/match-sample";
 import type { SolveResponseBody } from "../src/contracts";
+import type { NodeWithPortPoints } from "../../lib/types";
 
 const DEFAULT_PAIR_COUNT = 4;
 const DEFAULT_SAMPLE_COUNT = 32;
@@ -61,6 +62,17 @@ const computeStats = (values: number[]) => {
   };
 };
 
+const toNodeWithPortPoints = (
+  sample: ReturnType<typeof canonicalizeDatasetSample>,
+): NodeWithPortPoints => ({
+  capacityMeshNodeId: sample.capacityMeshNodeId,
+  center: sample.center,
+  width: sample.width,
+  height: sample.height,
+  portPoints: sample.portPoints,
+  ...(sample.availableZ ? { availableZ: sample.availableZ } : {}),
+});
+
 const postSolveRequest = async (
   deploymentUrl: string,
   nodeWithPortPoints: unknown,
@@ -112,8 +124,10 @@ const main = async () => {
   }
 
   const samples = Array.from({ length: sampleCount }, (_, index) =>
-    canonicalizeDatasetSample(
-      createMatchSampleWithPairCount(1_000_000 + index, pairCount),
+    toNodeWithPortPoints(
+      canonicalizeDatasetSample(
+        createMatchSampleWithPairCount(1_000_000 + index, pairCount),
+      ),
     ),
   );
 
