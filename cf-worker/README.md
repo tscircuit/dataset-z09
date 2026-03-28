@@ -6,6 +6,7 @@ Routes:
 
 - `GET /health`
 - `POST /solve`
+- `POST /solve-batch`
 - `POST /admin/upsert-bucket`
 
 The worker stores z-bucketed cache variants in Workers KV under keys of the

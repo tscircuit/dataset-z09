@@ -156,9 +156,14 @@ const createEmptyBucket = (
   updatedAt: new Date().toISOString(),
 });
 
+export const createEmptyWorkerBucket = createEmptyBucket;
+
 const normalizeBucketEntry = (entry: WorkerBucketEntry): WorkerBucketEntry => ({
   ...entry,
-  zSignature: getVectorZSignature(entry.vecRaw),
+  zSignature:
+    typeof entry.zSignature === "string" && entry.zSignature.length > 0
+      ? entry.zSignature
+      : getVectorZSignature(entry.vecRaw),
 });
 
 export const parseWorkerBucket = (
@@ -196,6 +201,12 @@ export const loadWorkerBucket = async (
     zSignature,
   );
 
+export const getWorkerBucketRawText = (
+  kv: KvNamespaceLike,
+  pointPairCount: number,
+  zSignature: string,
+) => kv.get(getBucketKey(pointPairCount, zSignature), "text");
+
 const serializeWorkerBucket = (bucket: WorkerBucket) =>
   JSON.stringify({
     ...bucket,
@@ -222,6 +233,8 @@ const mergeBucketEntries = (
     updatedAt: new Date().toISOString(),
   };
 };
+
+export const mergeWorkerBucketEntries = mergeBucketEntries;
 
 export const saveWorkerBucket = async (
   kv: KvNamespaceLike,

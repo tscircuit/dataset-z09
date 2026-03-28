@@ -1,9 +1,12 @@
 import { canonicalizeDatasetSample } from "../../lib/solve-cache";
 import { createMatchSampleWithPairCount } from "../../lib/match-sample";
-import type { SolveResponseBody } from "../src/contracts";
+import type {
+  SolveBatchResponseBody,
+  SolveResponseBody,
+} from "../src/contracts";
 
 const DEFAULT_PAIR_COUNT = 4;
-const DEFAULT_SAMPLE_COUNT = 32;
+const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_REPEAT_COUNT = 3;
 
 const parseFlagValue = (argv: string[], flagName: string) => {
@@ -61,31 +64,31 @@ const computeStats = (values: number[]) => {
   };
 };
 
-const postSolveRequest = async (
+const postSolveBatchRequest = async (
   deploymentUrl: string,
-  nodeWithPortPoints: unknown,
+  nodesWithPortPoints: unknown[],
 ) => {
   const startedAt = performance.now();
-  const response = await fetch(`${deploymentUrl}/solve`, {
+  const response = await fetch(`${deploymentUrl}/solve-batch`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      nodeWithPortPoints,
+      nodesWithPortPoints,
     }),
   });
   const endedAt = performance.now();
 
   if (!response.ok) {
     throw new Error(
-      `Solve request failed: ${response.status} ${await response.text()}`,
+      `Solve batch request failed: ${response.status} ${await response.text()}`,
     );
   }
 
   return {
     elapsedMs: endedAt - startedAt,
-    body: (await response.json()) as SolveResponseBody,
+    body: (await response.json()) as SolveBatchResponseBody,
   };
 };
 
@@ -93,11 +96,7 @@ const main = async () => {
   const argv = process.argv.slice(2);
   const deploymentUrl = requireFlagValue(argv, "--url").replace(/\/$/, "");
   const pairCount = parseIntegerFlag(argv, "--pair-count", DEFAULT_PAIR_COUNT);
-  const sampleCount = parseIntegerFlag(
-    argv,
-    "--sample-count",
-    DEFAULT_SAMPLE_COUNT,
-  );
+  const batchSize = parseIntegerFlag(argv, "--batch-size", DEFAULT_BATCH_SIZE);
   const repeatCount = parseIntegerFlag(
     argv,
     "--repeat-count",
@@ -111,69 +110,58 @@ const main = async () => {
     );
   }
 
-  const samples = Array.from({ length: sampleCount }, (_, index) =>
+  const samples = Array.from({ length: batchSize }, (_, index) =>
     canonicalizeDatasetSample(
-      createMatchSampleWithPairCount(1_000_000 + index, pairCount),
+      createMatchSampleWithPairCount(2_000_000 + index, pairCount),
     ),
   );
 
   console.log(
-    `Warming ${sampleCount} samples against ${deploymentUrl} for pairCount=${pairCount}`,
+    `Warming batch of ${batchSize} samples against ${deploymentUrl} for pairCount=${pairCount}`,
   );
-
-  for (const sample of samples) {
-    await postSolveRequest(deploymentUrl, sample);
-  }
+  await postSolveBatchRequest(deploymentUrl, samples);
 
   const externalLatencies: number[] = [];
-  const internalTotals: number[] = [];
-  const kvReads: number[] = [];
-  const kvGets: number[] = [];
-  const bucketParses: number[] = [];
-  const rankings: number[] = [];
-  const hitSources = new Map<string, number>();
-  let successCount = 0;
-
-  console.log(`Profiling ${sampleCount * repeatCount} cache-hit requests`);
+  const totals: number[] = [];
+  const canonicalizeTimes: number[] = [];
+  const kvGetTimes: number[] = [];
+  const bucketParseTimes: number[] = [];
+  const rankingTimes: number[] = [];
+  const solveTimes: number[] = [];
+  const kvWriteTimes: number[] = [];
+  const sourceCounts = new Map<string, number>();
 
   for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
-    for (const sample of samples) {
-      const result = await postSolveRequest(deploymentUrl, sample);
-      externalLatencies.push(result.elapsedMs);
-      internalTotals.push(result.body.timingsMs.total);
+    const result = await postSolveBatchRequest(deploymentUrl, samples);
+    externalLatencies.push(result.elapsedMs);
+    totals.push(result.body.timingsMs.total);
+    canonicalizeTimes.push(result.body.timingsMs.canonicalize);
+    kvGetTimes.push(result.body.timingsMs.kvGet);
+    bucketParseTimes.push(result.body.timingsMs.bucketParse);
+    rankingTimes.push(result.body.timingsMs.ranking);
+    solveTimes.push(result.body.timingsMs.solve);
+    kvWriteTimes.push(result.body.timingsMs.kvWrite);
 
-      if (result.body.timingsMs.kvRead !== undefined) {
-        kvReads.push(result.body.timingsMs.kvRead);
-      }
-      if (result.body.timingsMs.kvGet !== undefined) {
-        kvGets.push(result.body.timingsMs.kvGet);
-      }
-      if (result.body.timingsMs.bucketParse !== undefined) {
-        bucketParses.push(result.body.timingsMs.bucketParse);
-      }
-      if (result.body.timingsMs.ranking !== undefined) {
-        rankings.push(result.body.timingsMs.ranking);
-      }
-
-      hitSources.set(
-        result.body.source,
-        (hitSources.get(result.body.source) ?? 0) + 1,
-      );
-
-      if (result.body.source === "cache") {
-        successCount += 1;
-      }
+    for (const entry of result.body.results) {
+      sourceCounts.set(entry.source, (sourceCounts.get(entry.source) ?? 0) + 1);
     }
   }
 
-  console.log("Source counts:", Object.fromEntries(hitSources.entries()));
-  console.log(`Cache hits during profile: ${successCount}/${sampleCount * repeatCount}`);
-  console.log("External latency (ms):", computeStats(externalLatencies));
-  console.log("Worker total timing (ms):", computeStats(internalTotals));
-  console.log("Worker KV read timing (ms):", computeStats(kvReads));
-  console.log("Worker KV get timing (ms):", computeStats(kvGets));
-  console.log("Worker bucket parse timing (ms):", computeStats(bucketParses));
-  console.log("Worker ranking timing (ms):", computeStats(rankings));
+  console.log("Source counts:", Object.fromEntries(sourceCounts.entries()));
+  console.log("External batch latency (ms):", computeStats(externalLatencies));
+  console.log("Worker batch total (ms):", computeStats(totals));
+  console.log(
+    "Worker batch canonicalize (ms):",
+    computeStats(canonicalizeTimes),
+  );
+  console.log("Worker batch kvGet (ms):", computeStats(kvGetTimes));
+  console.log(
+    "Worker batch bucketParse (ms):",
+    computeStats(bucketParseTimes),
+  );
+  console.log("Worker batch ranking (ms):", computeStats(rankingTimes));
+  console.log("Worker batch solve (ms):", computeStats(solveTimes));
+  console.log("Worker batch kvWrite (ms):", computeStats(kvWriteTimes));
 };
 
 main().catch((error) => {

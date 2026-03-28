@@ -1,20 +1,30 @@
 import {
   canonicalizeSolveRequest,
+  createEmptyWorkerBucket,
   decanonicalizeRoutesForResponse,
+  expandEntryIntoWorkerBuckets,
   findBucketMatch,
+  getBucketKey,
   getSolveWorkerConfig,
-  loadWorkerBucket,
+  getWorkerBucketRawText,
   mergeEntriesIntoBucket,
+  mergeWorkerBucketEntries,
+  parseWorkerBucket,
   solveNodeWithAutorouter,
   upsertValidatedEntryAcrossBuckets,
   validateSolvedEntry,
 } from "./cache-logic";
 import type {
+  SolveBatchRequestBody,
+  SolveBatchResponseBody,
   SolveResponseBody,
+  SolveTimingBreakdown,
   UpsertBucketRequestBody,
   WorkerEnv,
   WorkerExecutionContext,
 } from "./contracts";
+
+const MAX_BATCH_SIZE = 64;
 
 const jsonResponse = (body: unknown, init?: ResponseInit) =>
   Response.json(body, {
@@ -59,9 +69,167 @@ const handleHealthRequest = () =>
     service: "dataset-z09-solve-cache",
   });
 
+const createCacheLookupTimings = (
+  kvGetMs: number,
+  bucketParseMs: number,
+  rankingMs: number,
+  totalMs: number,
+): SolveTimingBreakdown => ({
+  total: totalMs,
+  kvRead: kvGetMs + bucketParseMs,
+  kvGet: kvGetMs,
+  bucketParse: bucketParseMs,
+  ranking: rankingMs,
+  cacheApply: rankingMs,
+});
+
+const solveAgainstLoadedBucket = async ({
+  solveRequest,
+  bucket,
+  env,
+  config,
+  baseTimingsMs,
+}: {
+  solveRequest: ReturnType<typeof canonicalizeSolveRequest>;
+  bucket: ReturnType<typeof parseWorkerBucket>;
+  env: WorkerEnv;
+  config: ReturnType<typeof getSolveWorkerConfig>;
+  baseTimingsMs?: Partial<SolveTimingBreakdown>;
+}): Promise<{
+  responseBody: SolveResponseBody;
+  expandedEntries: ReturnType<typeof expandEntryIntoWorkerBuckets> | null;
+}> => {
+  const requestStart = performance.now();
+  const rankingStart = performance.now();
+  const match = findBucketMatch(
+    solveRequest.canonicalNodeWithPortPoints,
+    solveRequest.vecRaw,
+    bucket.entries,
+    config.maxCandidatesToTry,
+  );
+  const rankingEnd = performance.now();
+  const rankingMs = rankingEnd - rankingStart;
+
+  if (match) {
+    return {
+      responseBody: {
+        ok: true,
+        source: "cache",
+        pairCount: solveRequest.pairCount,
+        zSignature: solveRequest.zSignature,
+        bucketKey: solveRequest.bucketKey,
+        bucketSize: bucket.entries.length,
+        routes: decanonicalizeRoutesForResponse(
+          match.routes,
+          solveRequest.canonicalization,
+        ),
+        drc: match.drc,
+        timingsMs: {
+          ...baseTimingsMs,
+          ranking: rankingMs,
+          cacheApply: rankingMs,
+          total: performance.now() - requestStart,
+        },
+      },
+      expandedEntries: null,
+    };
+  }
+
+  const solveStart = performance.now();
+  const solvedRoutes = solveNodeWithAutorouter(
+    solveRequest.canonicalNodeWithPortPoints,
+    config,
+  );
+  const solveEnd = performance.now();
+  const solveMs = solveEnd - solveStart;
+
+  if (!solvedRoutes) {
+    return {
+      responseBody: {
+        ok: true,
+        source: "none",
+        pairCount: solveRequest.pairCount,
+        zSignature: solveRequest.zSignature,
+        bucketKey: solveRequest.bucketKey,
+        bucketSize: bucket.entries.length,
+        routes: null,
+        drc: null,
+        solverSolved: false,
+        message: "Solver did not find a solution.",
+        timingsMs: {
+          ...baseTimingsMs,
+          ranking: rankingMs,
+          solve: solveMs,
+          total: performance.now() - requestStart,
+        },
+      },
+      expandedEntries: null,
+    };
+  }
+
+  const validatedEntry = validateSolvedEntry(
+    solveRequest.canonicalNodeWithPortPoints,
+    solvedRoutes,
+  );
+
+  if (!validatedEntry) {
+    return {
+      responseBody: {
+        ok: true,
+        source: "none",
+        pairCount: solveRequest.pairCount,
+        zSignature: solveRequest.zSignature,
+        bucketKey: solveRequest.bucketKey,
+        bucketSize: bucket.entries.length,
+        routes: null,
+        drc: null,
+        solverSolved: true,
+        message: "Solver produced routes, but they failed validation.",
+        timingsMs: {
+          ...baseTimingsMs,
+          ranking: rankingMs,
+          solve: solveMs,
+          total: performance.now() - requestStart,
+        },
+      },
+      expandedEntries: null,
+    };
+  }
+
+  const kvWriteStart = performance.now();
+  await upsertValidatedEntryAcrossBuckets(env.SOLVE_CACHE, validatedEntry);
+  const kvWriteEnd = performance.now();
+  const kvWriteMs = kvWriteEnd - kvWriteStart;
+
+  return {
+    responseBody: {
+      ok: true,
+      source: "solver",
+      pairCount: solveRequest.pairCount,
+      zSignature: solveRequest.zSignature,
+      bucketKey: solveRequest.bucketKey,
+      bucketSize: bucket.entries.length + 1,
+      routes: decanonicalizeRoutesForResponse(
+        validatedEntry.solution,
+        solveRequest.canonicalization,
+      ),
+      drc: null,
+      solverSolved: true,
+      timingsMs: {
+        ...baseTimingsMs,
+        ranking: rankingMs,
+        solve: solveMs,
+        kvWrite: kvWriteMs,
+        total: performance.now() - requestStart,
+      },
+    },
+    expandedEntries: expandEntryIntoWorkerBuckets(validatedEntry),
+  };
+};
+
 const handleSolveRequest = async (request: Request, env: WorkerEnv) => {
   const totalStart = performance.now();
-  const requestBody = (await request.json()) as {
+  const requestBody = (await request.json()) as Partial<SolveBatchRequestBody> & {
     nodeWithPortPoints?: unknown;
   };
   const rawNodeWithPortPoints = requestBody.nodeWithPortPoints;
@@ -73,128 +241,190 @@ const handleSolveRequest = async (request: Request, env: WorkerEnv) => {
   const config = getSolveWorkerConfig(env);
   const solveRequest = canonicalizeSolveRequest(rawNodeWithPortPoints as never);
 
-  const kvReadStart = performance.now();
-  const bucket = await loadWorkerBucket(
+  const kvGetStart = performance.now();
+  const rawBucket = await getWorkerBucketRawText(
     env.SOLVE_CACHE,
     solveRequest.pairCount,
     solveRequest.zSignature,
   );
-  const kvReadEnd = performance.now();
-
-  const rankingStart = performance.now();
-  const match = findBucketMatch(
-    solveRequest.canonicalNodeWithPortPoints,
-    solveRequest.vecRaw,
-    bucket.entries,
-    config.maxCandidatesToTry,
+  const kvGetEnd = performance.now();
+  const bucketParseStart = performance.now();
+  const bucket = parseWorkerBucket(
+    rawBucket,
+    solveRequest.pairCount,
+    solveRequest.zSignature,
   );
-  const rankingEnd = performance.now();
+  const bucketParseEnd = performance.now();
 
-  if (match) {
-    const responseBody: SolveResponseBody = {
-      ok: true,
-      source: "cache",
-      pairCount: solveRequest.pairCount,
-      zSignature: solveRequest.zSignature,
-      bucketKey: solveRequest.bucketKey,
-      bucketSize: bucket.entries.length,
-      routes: decanonicalizeRoutesForResponse(
-        match.routes,
-        solveRequest.canonicalization,
-      ),
-      drc: match.drc,
-      timingsMs: {
-        total: performance.now() - totalStart,
-        kvRead: kvReadEnd - kvReadStart,
-        ranking: rankingEnd - rankingStart,
-        cacheApply: rankingEnd - rankingStart,
-      },
-    };
-
-    return jsonResponse(responseBody);
-  }
-
-  const solveStart = performance.now();
-  const solvedRoutes = solveNodeWithAutorouter(
-    solveRequest.canonicalNodeWithPortPoints,
+  const result = await solveAgainstLoadedBucket({
+    solveRequest,
+    bucket,
+    env,
     config,
-  );
-  const solveEnd = performance.now();
-
-  if (!solvedRoutes) {
-    const responseBody: SolveResponseBody = {
-      ok: true,
-      source: "none",
-      pairCount: solveRequest.pairCount,
-      zSignature: solveRequest.zSignature,
-      bucketKey: solveRequest.bucketKey,
-      bucketSize: bucket.entries.length,
-      routes: null,
-      drc: null,
-      solverSolved: false,
-      message: "Solver did not find a solution.",
-      timingsMs: {
-        total: performance.now() - totalStart,
-        kvRead: kvReadEnd - kvReadStart,
-        ranking: rankingEnd - rankingStart,
-        solve: solveEnd - solveStart,
-      },
-    };
-
-    return jsonResponse(responseBody);
-  }
-
-  const validatedEntry = validateSolvedEntry(
-    solveRequest.canonicalNodeWithPortPoints,
-    solvedRoutes,
-  );
-
-  if (!validatedEntry) {
-    const responseBody: SolveResponseBody = {
-      ok: true,
-      source: "none",
-      pairCount: solveRequest.pairCount,
-      zSignature: solveRequest.zSignature,
-      bucketKey: solveRequest.bucketKey,
-      bucketSize: bucket.entries.length,
-      routes: null,
-      drc: null,
-      solverSolved: true,
-      message: "Solver produced routes, but they failed validation.",
-      timingsMs: {
-        total: performance.now() - totalStart,
-        kvRead: kvReadEnd - kvReadStart,
-        ranking: rankingEnd - rankingStart,
-        solve: solveEnd - solveStart,
-      },
-    };
-
-    return jsonResponse(responseBody);
-  }
-
-  const kvWriteStart = performance.now();
-  await upsertValidatedEntryAcrossBuckets(env.SOLVE_CACHE, validatedEntry);
-  const kvWriteEnd = performance.now();
-
-  const responseBody: SolveResponseBody = {
-    ok: true,
-    source: "solver",
-    pairCount: solveRequest.pairCount,
-    zSignature: solveRequest.zSignature,
-    bucketKey: solveRequest.bucketKey,
-    bucketSize: bucket.entries.length + 1,
-    routes: decanonicalizeRoutesForResponse(
-      validatedEntry.solution,
-      solveRequest.canonicalization,
+    baseTimingsMs: createCacheLookupTimings(
+      kvGetEnd - kvGetStart,
+      bucketParseEnd - bucketParseStart,
+      0,
+      performance.now() - totalStart,
     ),
-    drc: null,
-    solverSolved: true,
+  });
+
+  result.responseBody.timingsMs.total = performance.now() - totalStart;
+
+  return jsonResponse(result.responseBody);
+};
+
+const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
+  const totalStart = performance.now();
+  const requestBody = (await request.json()) as Partial<SolveBatchRequestBody>;
+
+  if (!Array.isArray(requestBody.nodesWithPortPoints)) {
+    return errorResponse(400, "Request body must include nodesWithPortPoints.");
+  }
+
+  if (requestBody.nodesWithPortPoints.length === 0) {
+    return errorResponse(400, "nodesWithPortPoints must not be empty.");
+  }
+
+  if (requestBody.nodesWithPortPoints.length > MAX_BATCH_SIZE) {
+    return errorResponse(
+      400,
+      `nodesWithPortPoints may contain at most ${MAX_BATCH_SIZE} nodes.`,
+    );
+  }
+
+  const config = getSolveWorkerConfig(env);
+
+  const canonicalizeStart = performance.now();
+  const solveRequests = requestBody.nodesWithPortPoints.map((nodeWithPortPoints) =>
+    canonicalizeSolveRequest(nodeWithPortPoints),
+  );
+  const canonicalizeEnd = performance.now();
+
+  const uniqueBuckets = new Map<
+    string,
+    { pointPairCount: number; zSignature: string }
+  >();
+
+  for (const solveRequest of solveRequests) {
+    uniqueBuckets.set(solveRequest.bucketKey, {
+      pointPairCount: solveRequest.pairCount,
+      zSignature: solveRequest.zSignature,
+    });
+  }
+
+  const kvGetStart = performance.now();
+  const rawBucketEntries = await Promise.all(
+    [...uniqueBuckets.entries()].map(async ([bucketKey, bucketMetadata]) => [
+      bucketKey,
+      await getWorkerBucketRawText(
+        env.SOLVE_CACHE,
+        bucketMetadata.pointPairCount,
+        bucketMetadata.zSignature,
+      ),
+    ]),
+  );
+  const kvGetEnd = performance.now();
+
+  const bucketParseStart = performance.now();
+  const bucketMap = new Map<
+    string,
+    ReturnType<typeof parseWorkerBucket>
+  >();
+
+  for (const entry of rawBucketEntries) {
+    const bucketKey = entry[0] as string;
+    const rawBucket = entry[1] as string | null;
+    const bucketMetadata = uniqueBuckets.get(bucketKey);
+    if (!bucketMetadata) {
+      continue;
+    }
+
+    bucketMap.set(
+      bucketKey,
+      parseWorkerBucket(
+        rawBucket as string | null,
+        bucketMetadata.pointPairCount,
+        bucketMetadata.zSignature,
+      ),
+    );
+  }
+  const bucketParseEnd = performance.now();
+
+  const results: SolveResponseBody[] = [];
+  let cacheCount = 0;
+  let solverCount = 0;
+  let noneCount = 0;
+  let rankingMs = 0;
+  let solveMs = 0;
+  let kvWriteMs = 0;
+
+  for (const solveRequest of solveRequests) {
+    const bucket =
+      bucketMap.get(solveRequest.bucketKey) ??
+      createEmptyWorkerBucket(solveRequest.pairCount, solveRequest.zSignature);
+    const result = await solveAgainstLoadedBucket({
+      solveRequest,
+      bucket,
+      env,
+      config,
+    });
+
+    results.push(result.responseBody);
+    rankingMs += result.responseBody.timingsMs.ranking ?? 0;
+    solveMs += result.responseBody.timingsMs.solve ?? 0;
+    kvWriteMs += result.responseBody.timingsMs.kvWrite ?? 0;
+
+    if (result.responseBody.source === "cache") {
+      cacheCount += 1;
+    } else if (result.responseBody.source === "solver") {
+      solverCount += 1;
+    } else {
+      noneCount += 1;
+    }
+
+    if (result.expandedEntries) {
+      const bucketsByKey = new Map<string, typeof result.expandedEntries>();
+
+      for (const entry of result.expandedEntries) {
+        const bucketKey = getBucketKey(result.responseBody.pairCount, entry.zSignature);
+        const existingEntries = bucketsByKey.get(bucketKey) ?? [];
+        existingEntries.push(entry);
+        bucketsByKey.set(bucketKey, existingEntries);
+      }
+
+      for (const [bucketKey, nextEntries] of bucketsByKey.entries()) {
+        const [rawPointPairCount, zSignature] = bucketKey.split(":");
+        const pointPairCount = Number.parseInt(rawPointPairCount ?? "", 10);
+        const currentBucket =
+          bucketMap.get(bucketKey) ??
+          createEmptyWorkerBucket(pointPairCount, zSignature ?? "");
+        bucketMap.set(
+          bucketKey,
+          mergeWorkerBucketEntries(currentBucket, nextEntries),
+        );
+      }
+    }
+  }
+
+  const responseBody: SolveBatchResponseBody = {
+    ok: true,
+    count: results.length,
+    uniqueBucketCount: uniqueBuckets.size,
+    results,
+    summary: {
+      cache: cacheCount,
+      solver: solverCount,
+      none: noneCount,
+    },
     timingsMs: {
       total: performance.now() - totalStart,
-      kvRead: kvReadEnd - kvReadStart,
-      ranking: rankingEnd - rankingStart,
-      solve: solveEnd - solveStart,
-      kvWrite: kvWriteEnd - kvWriteStart,
+      canonicalize: canonicalizeEnd - canonicalizeStart,
+      kvGet: kvGetEnd - kvGetStart,
+      bucketParse: bucketParseEnd - bucketParseStart,
+      ranking: rankingMs,
+      solve: solveMs,
+      kvWrite: kvWriteMs,
     },
   };
 
@@ -255,6 +485,10 @@ export default {
 
     if (request.method === "POST" && requestUrl.pathname === "/solve") {
       return handleSolveRequest(request, env);
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/solve-batch") {
+      return handleSolveBatchRequest(request, env);
     }
 
     if (
