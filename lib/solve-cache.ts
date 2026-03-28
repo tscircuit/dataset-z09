@@ -25,6 +25,8 @@ type CanonicalizationResult = {
   rootConnectionNameMap: Map<string, string>;
 };
 
+export type NodeCanonicalizationResult = CanonicalizationResult;
+
 export type SolveCacheEntry = {
   sample: NodeWithPortPoints;
   solution: HighDensityIntraNodeRoute[];
@@ -481,6 +483,69 @@ const applyCanonicalizationToSolution = (
 
   return routes;
 };
+
+export const decanonicalizeSolution = (
+  solution: HighDensityIntraNodeRoute[] | null,
+  canonicalization: CanonicalizationResult,
+): HighDensityIntraNodeRoute[] | null => {
+  if (!solution) return null;
+
+  const sourceConnectionNameByCanonical = new Map<string, string>();
+  const sourceRootConnectionNameByCanonical = new Map<string, string>();
+
+  for (const pair of canonicalization.pairs) {
+    sourceConnectionNameByCanonical.set(
+      pair.canonicalConnectionName,
+      pair.sourceConnectionName,
+    );
+
+    if (
+      pair.canonicalRootConnectionName !== undefined &&
+      pair.sourceRootConnectionName !== undefined
+    ) {
+      sourceRootConnectionNameByCanonical.set(
+        pair.canonicalRootConnectionName,
+        pair.sourceRootConnectionName,
+      );
+    }
+  }
+
+  const routes = solution.map((route) => {
+    const sourceConnectionName = sourceConnectionNameByCanonical.get(
+      route.connectionName,
+    );
+
+    if (!sourceConnectionName) {
+      throw new Error(
+        `Unable to decanonicalize route ${route.connectionName}: missing source connection mapping`,
+      );
+    }
+
+    const sourceRootConnectionName =
+      route.rootConnectionName === undefined
+        ? undefined
+        : sourceRootConnectionNameByCanonical.get(route.rootConnectionName) ??
+          route.rootConnectionName;
+
+    return {
+      ...cloneRoute(route),
+      connectionName: sourceConnectionName,
+      ...(sourceRootConnectionName === undefined
+        ? { rootConnectionName: undefined }
+        : { rootConnectionName: sourceRootConnectionName }),
+    };
+  });
+
+  routes.sort((left, right) =>
+    left.connectionName.localeCompare(right.connectionName),
+  );
+
+  return routes;
+};
+
+export const getNodeCanonicalizationResult = (
+  nodeWithPortPoints: NodeWithPortPoints,
+): NodeCanonicalizationResult => getCanonicalizationResult(nodeWithPortPoints);
 
 export const canonicalizeNodeWithPortPoints = (
   nodeWithPortPoints: NodeWithPortPoints,

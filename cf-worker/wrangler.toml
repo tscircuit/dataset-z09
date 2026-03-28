@@ -1,0 +1,13 @@
+name = "dataset-z09-solve-cache"
+main = "src/index.ts"
+compatibility_date = "2026-03-28"
+
+kv_namespaces = [
+  { binding = "SOLVE_CACHE", id = "REPLACE_WITH_KV_NAMESPACE_ID", preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID" }
+]
+
+[vars]
+MAX_SOLVE_CACHE_CANDIDATES_TO_TRY = "16"
+SOLVER_MAX_ITERATIONS = "250000"
+TRACE_WIDTH = "0.1"
+VIA_DIAMETER = "0.3"
