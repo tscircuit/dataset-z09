@@ -1,9 +1,14 @@
 name = "dataset-z09-solve-cache"
 main = "src/index.ts"
 compatibility_date = "2026-03-28"
+workers_dev = true
 
 kv_namespaces = [
-  { binding = "SOLVE_CACHE", id = "REPLACE_WITH_KV_NAMESPACE_ID", preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID" }
+  { binding = "SOLVE_CACHE", id = "ac0047d6f8a3444ebf65aeb9d72c1011", preview_id = "5190065978e7479e8e7d104fe3226ccb" }
+]
+
+routes = [
+  { pattern = "hd-cache.tscircuit.com", custom_domain = true }
 ]
 
 [vars]
