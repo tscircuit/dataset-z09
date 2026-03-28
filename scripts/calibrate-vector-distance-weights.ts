@@ -11,7 +11,10 @@ import {
 } from "../lib/solve-cache";
 import type { DatasetSample } from "../lib/types";
 import { computeVecRaw } from "../lib/vec-raw";
-import { canonicalizeRawVecStructure } from "../lib/vector-search";
+import {
+  canonicalizeRawVecStructure,
+  getRawVecHeaderLength,
+} from "../lib/vector-search";
 
 const DEFAULT_PAIR_COUNT = 2;
 const DEFAULT_TOP_K = DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY;
@@ -22,22 +25,32 @@ const DEFAULT_LEARNING_RATE = 0.05;
 const DEFAULT_MARGIN_TEMPERATURE = 0.1;
 const WEIGHT_REGULARIZATION = 0.001;
 const UPDATE_EPSILON = 1e-9;
-const UNIFORM_WEIGHT = 1 / 3;
+const WEIGHT_COMPONENT_COUNT = 6;
+const UNIFORM_WEIGHT = 1 / WEIGHT_COMPONENT_COUNT;
 
 type WeightVector = {
   ratio: number;
+  sameZIntersections: number;
+  differentZIntersections: number;
+  entryExitZChanges: number;
   z: number;
   distWeight: number;
 };
 
 type WeightLogits = {
   ratio: number;
+  sameZIntersections: number;
+  differentZIntersections: number;
+  entryExitZChanges: number;
   z: number;
   distWeight: number;
 };
 
 type DistanceComponents = {
   ratio: number;
+  sameZIntersections: number;
+  differentZIntersections: number;
+  entryExitZChanges: number;
   z: number;
   dist: number;
 };
@@ -157,24 +170,59 @@ const parseStringFlag = (argv: string[], flagNames: string[]) => {
 };
 
 const logitsToWeights = (logits: WeightLogits): WeightVector => {
-  const maxLogit = Math.max(logits.ratio, logits.z, logits.distWeight);
+  const maxLogit = Math.max(
+    logits.ratio,
+    logits.sameZIntersections,
+    logits.differentZIntersections,
+    logits.entryExitZChanges,
+    logits.z,
+    logits.distWeight,
+  );
   const ratioExp = Math.exp(logits.ratio - maxLogit);
+  const sameZIntersectionsExp = Math.exp(
+    logits.sameZIntersections - maxLogit,
+  );
+  const differentZIntersectionsExp = Math.exp(
+    logits.differentZIntersections - maxLogit,
+  );
+  const entryExitZChangesExp = Math.exp(
+    logits.entryExitZChanges - maxLogit,
+  );
   const zExp = Math.exp(logits.z - maxLogit);
   const distExp = Math.exp(logits.distWeight - maxLogit);
-  const total = ratioExp + zExp + distExp;
+  const total =
+    ratioExp +
+    sameZIntersectionsExp +
+    differentZIntersectionsExp +
+    entryExitZChangesExp +
+    zExp +
+    distExp;
 
   return {
     ratio: ratioExp / total,
+    sameZIntersections: sameZIntersectionsExp / total,
+    differentZIntersections: differentZIntersectionsExp / total,
+    entryExitZChanges: entryExitZChangesExp / total,
     z: zExp / total,
     distWeight: distExp / total,
   };
 };
 
 const centerLogits = (logits: WeightLogits): WeightLogits => {
-  const mean = (logits.ratio + logits.z + logits.distWeight) / 3;
+  const mean =
+    (logits.ratio +
+      logits.sameZIntersections +
+      logits.differentZIntersections +
+      logits.entryExitZChanges +
+      logits.z +
+      logits.distWeight) /
+    WEIGHT_COMPONENT_COUNT;
 
   return {
     ratio: logits.ratio - mean,
+    sameZIntersections: logits.sameZIntersections - mean,
+    differentZIntersections: logits.differentZIntersections - mean,
+    entryExitZChanges: logits.entryExitZChanges - mean,
     z: logits.z - mean,
     distWeight: logits.distWeight - mean,
   };
@@ -192,12 +240,19 @@ const getDistanceComponents = (
 
   const left = canonicalizeRawVecStructure(leftVector);
   const right = canonicalizeRawVecStructure(rightVector);
+  const headerLength = getRawVecHeaderLength(left) ?? 1;
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
+  const sameZIntersectionsDelta =
+    headerLength >= 4 ? (left[1] ?? 0) - (right[1] ?? 0) : 0;
+  const differentZIntersectionsDelta =
+    headerLength >= 4 ? (left[2] ?? 0) - (right[2] ?? 0) : 0;
+  const entryExitZChangesDelta =
+    headerLength >= 4 ? (left[3] ?? 0) - (right[3] ?? 0) : 0;
 
   let z = 0;
   let dist = 0;
 
-  for (let index = 1; index < left.length; index += 4) {
+  for (let index = headerLength; index < left.length; index += 4) {
     const zDelta = (left[index + 1] ?? 0) - (right[index + 1] ?? 0);
     const xDelta = (left[index + 2] ?? 0) - (right[index + 2] ?? 0);
     const yDelta = (left[index + 3] ?? 0) - (right[index + 3] ?? 0);
@@ -208,6 +263,10 @@ const getDistanceComponents = (
 
   return {
     ratio: ratioDelta * ratioDelta,
+    sameZIntersections: sameZIntersectionsDelta * sameZIntersectionsDelta,
+    differentZIntersections:
+      differentZIntersectionsDelta * differentZIntersectionsDelta,
+    entryExitZChanges: entryExitZChangesDelta * entryExitZChangesDelta,
     z,
     dist,
   };
@@ -218,11 +277,21 @@ const getWeightedDistance = (
   weights: WeightVector,
 ) =>
   components.ratio * weights.ratio +
+  components.sameZIntersections * weights.sameZIntersections +
+  components.differentZIntersections * weights.differentZIntersections +
+  components.entryExitZChanges * weights.entryExitZChanges +
   components.z * weights.z +
   components.dist * weights.distWeight;
 
 const formatWeights = (weights: WeightVector) =>
-  `ratio=${weights.ratio.toFixed(4)} z=${weights.z.toFixed(4)} distWeight=${weights.distWeight.toFixed(4)}`;
+  [
+    `ratio=${weights.ratio.toFixed(4)}`,
+    `sameZIntersections=${weights.sameZIntersections.toFixed(4)}`,
+    `differentZIntersections=${weights.differentZIntersections.toFixed(4)}`,
+    `entryExitZChanges=${weights.entryExitZChanges.toFixed(4)}`,
+    `z=${weights.z.toFixed(4)}`,
+    `distWeight=${weights.distWeight.toFixed(4)}`,
+  ].join(" ");
 
 const isEvaluationBetter = (
   candidate: EvaluationMetrics,
@@ -401,12 +470,14 @@ const getSampleGradientAndLoss = (
 ) => {
   if (negativeCandidates.length === 0) {
     return {
-      gradient: [0, 0, 0] as [number, number, number],
+      gradient: [0, 0, 0, 0, 0, 0] as [number, number, number, number, number, number],
       loss: 0,
     };
   }
 
-  const gradient: [number, number, number] = [0, 0, 0];
+  const gradient: [number, number, number, number, number, number] = [
+    0, 0, 0, 0, 0, 0,
+  ];
   let loss = 0;
 
   const pairWeight = 1 / negativeCandidates.length;
@@ -415,12 +486,24 @@ const getSampleGradientAndLoss = (
     const difference = {
       ratio:
         negativeCandidate.components.ratio - positiveCandidate.components.ratio,
+      sameZIntersections:
+        negativeCandidate.components.sameZIntersections -
+        positiveCandidate.components.sameZIntersections,
+      differentZIntersections:
+        negativeCandidate.components.differentZIntersections -
+        positiveCandidate.components.differentZIntersections,
+      entryExitZChanges:
+        negativeCandidate.components.entryExitZChanges -
+        positiveCandidate.components.entryExitZChanges,
       z: negativeCandidate.components.z - positiveCandidate.components.z,
       dist:
         negativeCandidate.components.dist - positiveCandidate.components.dist,
     };
     const margin = getWeightedDistance(difference, {
       ratio: weights.ratio,
+      sameZIntersections: weights.sameZIntersections,
+      differentZIntersections: weights.differentZIntersections,
+      entryExitZChanges: weights.entryExitZChanges,
       z: weights.z,
       distWeight: weights.distWeight,
     });
@@ -428,8 +511,11 @@ const getSampleGradientAndLoss = (
       pairWeight * getLogisticGradientScale(margin, temperature);
 
     gradient[0] += gradientScale * difference.ratio;
-    gradient[1] += gradientScale * difference.z;
-    gradient[2] += gradientScale * difference.dist;
+    gradient[1] += gradientScale * difference.sameZIntersections;
+    gradient[2] += gradientScale * difference.differentZIntersections;
+    gradient[3] += gradientScale * difference.entryExitZChanges;
+    gradient[4] += gradientScale * difference.z;
+    gradient[5] += gradientScale * difference.dist;
     loss += pairWeight * getLogisticLoss(margin, temperature);
   }
 
@@ -481,6 +567,9 @@ const trainWeights = async (
 ) => {
   let logits: WeightLogits = {
     ratio: 0,
+    sameZIntersections: 0,
+    differentZIntersections: 0,
+    entryExitZChanges: 0,
     z: 0,
     distWeight: 0,
   };
@@ -515,7 +604,9 @@ const trainWeights = async (
         batchStart,
         Math.min(batchStart + batchSize, shuffledSamples.length),
       );
-      const batchGradient: [number, number, number] = [0, 0, 0];
+      const batchGradient: [number, number, number, number, number, number] = [
+        0, 0, 0, 0, 0, 0,
+      ];
       let batchGradientSamples = 0;
 
       for (const trainingSample of epochBatch) {
@@ -553,6 +644,9 @@ const trainWeights = async (
         batchGradient[0] += sampleGradient.gradient[0];
         batchGradient[1] += sampleGradient.gradient[1];
         batchGradient[2] += sampleGradient.gradient[2];
+        batchGradient[3] += sampleGradient.gradient[3];
+        batchGradient[4] += sampleGradient.gradient[4];
+        batchGradient[5] += sampleGradient.gradient[5];
         accumulatedLoss += sampleGradient.loss;
         lossCount += 1;
         gradientSamples += 1;
@@ -563,27 +657,60 @@ const trainWeights = async (
         continue;
       }
 
-      const averagedGradient: [number, number, number] = [
+      const averagedGradient: [number, number, number, number, number, number] = [
         batchGradient[0] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.ratio - UNIFORM_WEIGHT),
         batchGradient[1] / batchGradientSamples +
-          2 * WEIGHT_REGULARIZATION * (weights.z - UNIFORM_WEIGHT),
+          2 *
+            WEIGHT_REGULARIZATION *
+            (weights.sameZIntersections - UNIFORM_WEIGHT),
         batchGradient[2] / batchGradientSamples +
+          2 *
+            WEIGHT_REGULARIZATION *
+            (weights.differentZIntersections - UNIFORM_WEIGHT),
+        batchGradient[3] / batchGradientSamples +
+          2 *
+            WEIGHT_REGULARIZATION *
+            (weights.entryExitZChanges - UNIFORM_WEIGHT),
+        batchGradient[4] / batchGradientSamples +
+          2 * WEIGHT_REGULARIZATION * (weights.z - UNIFORM_WEIGHT),
+        batchGradient[5] / batchGradientSamples +
           2 * WEIGHT_REGULARIZATION * (weights.distWeight - UNIFORM_WEIGHT),
       ];
 
       const gradientDotWeights =
         weights.ratio * averagedGradient[0] +
-        weights.z * averagedGradient[1] +
-        weights.distWeight * averagedGradient[2];
+        weights.sameZIntersections * averagedGradient[1] +
+        weights.differentZIntersections * averagedGradient[2] +
+        weights.entryExitZChanges * averagedGradient[3] +
+        weights.z * averagedGradient[4] +
+        weights.distWeight * averagedGradient[5];
       const logitsGradient: WeightLogits = {
         ratio: weights.ratio * (averagedGradient[0] - gradientDotWeights),
-        z: weights.z * (averagedGradient[1] - gradientDotWeights),
+        sameZIntersections:
+          weights.sameZIntersections *
+          (averagedGradient[1] - gradientDotWeights),
+        differentZIntersections:
+          weights.differentZIntersections *
+          (averagedGradient[2] - gradientDotWeights),
+        entryExitZChanges:
+          weights.entryExitZChanges *
+          (averagedGradient[3] - gradientDotWeights),
+        z: weights.z * (averagedGradient[4] - gradientDotWeights),
         distWeight:
-          weights.distWeight * (averagedGradient[2] - gradientDotWeights),
+          weights.distWeight * (averagedGradient[5] - gradientDotWeights),
       };
       const nextLogits = centerLogits({
         ratio: logits.ratio - epochLearningRate * logitsGradient.ratio,
+        sameZIntersections:
+          logits.sameZIntersections -
+          epochLearningRate * logitsGradient.sameZIntersections,
+        differentZIntersections:
+          logits.differentZIntersections -
+          epochLearningRate * logitsGradient.differentZIntersections,
+        entryExitZChanges:
+          logits.entryExitZChanges -
+          epochLearningRate * logitsGradient.entryExitZChanges,
         z: logits.z - epochLearningRate * logitsGradient.z,
         distWeight:
           logits.distWeight - epochLearningRate * logitsGradient.distWeight,
@@ -591,6 +718,15 @@ const trainWeights = async (
       const nextWeights = logitsToWeights(nextLogits);
       const weightDelta =
         Math.abs(nextWeights.ratio - weights.ratio) +
+        Math.abs(
+          nextWeights.sameZIntersections - weights.sameZIntersections,
+        ) +
+        Math.abs(
+          nextWeights.differentZIntersections - weights.differentZIntersections,
+        ) +
+        Math.abs(
+          nextWeights.entryExitZChanges - weights.entryExitZChanges,
+        ) +
         Math.abs(nextWeights.z - weights.z) +
         Math.abs(nextWeights.distWeight - weights.distWeight);
 

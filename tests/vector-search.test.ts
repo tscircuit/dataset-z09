@@ -86,6 +86,54 @@ test("canonicalizeRawVecStructure reorders pairs and points while preserving abs
   ]);
 });
 
+test("canonicalizeRawVecStructure preserves the new topology header", () => {
+  expect(
+    canonicalizeRawVecStructure([
+      1,
+      7,
+      8,
+      9,
+      Math.PI / 2,
+      1,
+      0,
+      1,
+      (3 * Math.PI) / 2,
+      0,
+      0,
+      -1,
+      0,
+      0,
+      1,
+      0,
+      Math.PI,
+      1,
+      -1,
+      0,
+    ]),
+  ).toEqual([
+    1,
+    7,
+    8,
+    9,
+    0,
+    0,
+    1,
+    0,
+    Math.PI,
+    1,
+    -1,
+    0,
+    (3 * Math.PI) / 2,
+    0,
+    0,
+    -1,
+    Math.PI / 2,
+    1,
+    0,
+    1,
+  ]);
+});
+
 test("canonicalizeRawVecStructure prefers a z=0 sweep before a z=1 sweep", () => {
   expect(
     canonicalizeRawVecStructure([

@@ -15,12 +15,41 @@ type RawVecPair = [RawVecPoint, RawVecPoint];
 const VECTOR_MAGNITUDE_EPSILON = 1e-9;
 const TAU = Math.PI * 2;
 const LEXICOGRAPHIC_EPSILON = 1e-9;
+const LEGACY_RAW_VEC_HEADER_LENGTH = 1;
+const RAW_VEC_HEADER_LENGTH = 4;
+const RAW_VEC_PAIR_COMPONENT_COUNT = 8;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 0.0481,
-  z: 0.9013,
-  distWeight: 0.0506,
+  ratio: 0.1449,
+  sameZIntersections: 0.1891,
+  differentZIntersections: 0.1459,
+  entryExitZChanges: 0.2007,
+  z: 0.2247,
+  distWeight: 0.0946,
 } as const;
+
+export const getRawVecHeaderLength = (vector: number[]) => {
+  if (vector.length <= LEGACY_RAW_VEC_HEADER_LENGTH) {
+    return null;
+  }
+
+  if (
+    vector.length >= RAW_VEC_HEADER_LENGTH &&
+    (vector.length - RAW_VEC_HEADER_LENGTH) % RAW_VEC_PAIR_COMPONENT_COUNT === 0
+  ) {
+    return RAW_VEC_HEADER_LENGTH;
+  }
+
+  if (
+    (vector.length - LEGACY_RAW_VEC_HEADER_LENGTH) %
+      RAW_VEC_PAIR_COMPONENT_COUNT ===
+    0
+  ) {
+    return LEGACY_RAW_VEC_HEADER_LENGTH;
+  }
+
+  return null;
+};
 
 const normalizeAngle = (angle: number) => {
   const normalizedAngle = angle % TAU;
@@ -65,7 +94,8 @@ const compareRawVecPairsForSweep = (
 };
 
 export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
-  if (vector.length <= 1 || (vector.length - 1) % 8 !== 0) {
+  const headerLength = getRawVecHeaderLength(vector);
+  if (headerLength === null) {
     return [...vector];
   }
 
@@ -73,10 +103,15 @@ export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
   if (ratio === undefined) {
     return [...vector];
   }
+  const header = vector.slice(0, headerLength);
 
   const pairs: RawVecPair[] = [];
 
-  for (let index = 1; index < vector.length; index += 8) {
+  for (
+    let index = headerLength;
+    index < vector.length;
+    index += RAW_VEC_PAIR_COMPONENT_COUNT
+  ) {
     const firstAngle = vector[index];
     const firstZ = vector[index + 1];
     const firstX = vector[index + 2];
@@ -120,7 +155,7 @@ export const canonicalizeRawVecStructure = (vector: number[]): number[] => {
   pairs.sort(compareRawVecPairsForSweep);
 
   return [
-    ratio,
+    ...header,
     ...pairs.flatMap((pair) => [
       pair[0].angle,
       pair[0].z,
@@ -140,7 +175,23 @@ export const applyVectorWeights = (vector: number[]): number[] =>
       return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.ratio);
     }
 
-    const componentIndex = (index - 1) % 4;
+    const headerLength = getRawVecHeaderLength(vector);
+    if (headerLength === RAW_VEC_HEADER_LENGTH && index < headerLength) {
+      if (index === 1) {
+        return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.sameZIntersections);
+      }
+
+      if (index === 2) {
+        return (
+          value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.differentZIntersections)
+        );
+      }
+
+      return value * Math.sqrt(VECTOR_DISTANCE_WEIGHTS.entryExitZChanges);
+    }
+
+    const componentIndex =
+      (index - (headerLength ?? LEGACY_RAW_VEC_HEADER_LENGTH)) % 4;
     if (componentIndex === 0) {
       return 0;
     }
@@ -174,12 +225,26 @@ export const getVectorDistance = (
 
   const left = canonicalizeRawVecStructure(leftVector);
   const right = canonicalizeRawVecStructure(rightVector);
+  const headerLength =
+    getRawVecHeaderLength(left) ?? LEGACY_RAW_VEC_HEADER_LENGTH;
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
+  const sameZIntersectionsDelta =
+    headerLength === RAW_VEC_HEADER_LENGTH
+      ? (left[1] ?? 0) - (right[1] ?? 0)
+      : 0;
+  const differentZIntersectionsDelta =
+    headerLength === RAW_VEC_HEADER_LENGTH
+      ? (left[2] ?? 0) - (right[2] ?? 0)
+      : 0;
+  const entryExitZChangesDelta =
+    headerLength === RAW_VEC_HEADER_LENGTH
+      ? (left[3] ?? 0) - (right[3] ?? 0)
+      : 0;
 
   let zDistance = 0;
   let planarDistance = 0;
 
-  for (let index = 1; index < left.length; index += 4) {
+  for (let index = headerLength; index < left.length; index += 4) {
     const leftZ = left[index + 1] ?? 0;
     const rightZ = right[index + 1] ?? 0;
     const leftX = left[index + 2] ?? 0;
@@ -197,6 +262,15 @@ export const getVectorDistance = (
 
   return Math.sqrt(
     ratioDelta * ratioDelta * VECTOR_DISTANCE_WEIGHTS.ratio +
+      sameZIntersectionsDelta *
+        sameZIntersectionsDelta *
+        VECTOR_DISTANCE_WEIGHTS.sameZIntersections +
+      differentZIntersectionsDelta *
+        differentZIntersectionsDelta *
+        VECTOR_DISTANCE_WEIGHTS.differentZIntersections +
+      entryExitZChangesDelta *
+        entryExitZChangesDelta *
+        VECTOR_DISTANCE_WEIGHTS.entryExitZChanges +
       zDistance * VECTOR_DISTANCE_WEIGHTS.z +
       planarDistance * VECTOR_DISTANCE_WEIGHTS.distWeight,
   );

@@ -44,6 +44,20 @@ export const DIHEDRAL_SYMMETRIES = [
 
 export type DihedralSymmetry = (typeof DIHEDRAL_SYMMETRIES)[number];
 
+export const SOLVE_CACHE_SYMMETRIES = [
+  ...DIHEDRAL_SYMMETRIES,
+  "flipZ",
+  "flipX+flipZ",
+  "flipY+flipZ",
+  "rotate90+flipZ",
+  "rotate180+flipZ",
+  "rotate270+flipZ",
+  "flipDiagonal+flipZ",
+  "flipAntiDiagonal+flipZ",
+] as const;
+
+export type SolveCacheSymmetry = (typeof SOLVE_CACHE_SYMMETRIES)[number];
+
 export type SolveCacheFile = {
   pointPairCount: number;
   entries: SolveCacheEntry[];
@@ -53,7 +67,7 @@ export type SolveCacheCandidate = {
   distance: number;
   entry: SolveCacheEntry;
   sourceEntry: SolveCacheEntry;
-  symmetry: DihedralSymmetry;
+  symmetry: SolveCacheSymmetry;
 };
 
 export type ReattachedSolveCacheHit = {
@@ -162,8 +176,31 @@ const cloneRoute = (
 
 const symmetryVariantCache = new WeakMap<
   SolveCacheEntry,
-  Map<DihedralSymmetry, SolveCacheEntry>
+  Map<SolveCacheSymmetry, SolveCacheEntry>
 >();
+
+const FLIP_Z_SUFFIX = "+flipZ";
+
+const symmetryHasFlipZ = (symmetry: SolveCacheSymmetry) =>
+  symmetry === "flipZ" || symmetry.endsWith(FLIP_Z_SUFFIX);
+
+const getPlanarSymmetry = (symmetry: SolveCacheSymmetry): DihedralSymmetry => {
+  if (symmetry === "flipZ") {
+    return "identity";
+  }
+
+  if (symmetry.endsWith(FLIP_Z_SUFFIX)) {
+    return symmetry.slice(0, -FLIP_Z_SUFFIX.length) as DihedralSymmetry;
+  }
+
+  return symmetry;
+};
+
+const flipPointZ = (z: number) => {
+  if (z === 0) return 1;
+  if (z === 1) return 0;
+  return z;
+};
 
 const symmetrySwapsAxes = (symmetry: DihedralSymmetry) =>
   symmetry === "rotate90" ||
@@ -198,14 +235,15 @@ const transformRelativePoint = (
 const transformPointWithSymmetry = (
   point: { x: number; y: number },
   center: { x: number; y: number },
-  symmetry: DihedralSymmetry,
+  symmetry: SolveCacheSymmetry,
 ) => {
+  const planarSymmetry = getPlanarSymmetry(symmetry);
   const transformedPoint = transformRelativePoint(
     {
       x: point.x - center.x,
       y: point.y - center.y,
     },
-    symmetry,
+    planarSymmetry,
   );
 
   return {
@@ -216,17 +254,18 @@ const transformPointWithSymmetry = (
 
 const transformNodeWithPortPointsBySymmetry = (
   nodeWithPortPoints: NodeWithPortPoints,
-  symmetry: DihedralSymmetry,
+  symmetry: SolveCacheSymmetry,
 ): NodeWithPortPoints => ({
   ...nodeWithPortPoints,
-  width: symmetrySwapsAxes(symmetry)
+  width: symmetrySwapsAxes(getPlanarSymmetry(symmetry))
     ? nodeWithPortPoints.height
     : nodeWithPortPoints.width,
-  height: symmetrySwapsAxes(symmetry)
+  height: symmetrySwapsAxes(getPlanarSymmetry(symmetry))
     ? nodeWithPortPoints.width
     : nodeWithPortPoints.height,
   portPoints: nodeWithPortPoints.portPoints.map((portPoint) => ({
     ...portPoint,
+    z: symmetryHasFlipZ(symmetry) ? flipPointZ(portPoint.z) : portPoint.z,
     ...transformPointWithSymmetry(
       portPoint,
       nodeWithPortPoints.center,
@@ -238,11 +277,12 @@ const transformNodeWithPortPointsBySymmetry = (
 const transformRouteBySymmetry = (
   route: HighDensityIntraNodeRoute,
   center: { x: number; y: number },
-  symmetry: DihedralSymmetry,
+  symmetry: SolveCacheSymmetry,
 ): HighDensityIntraNodeRoute => ({
   ...cloneRoute(route),
   route: route.route.map((point) => ({
     ...point,
+    z: symmetryHasFlipZ(symmetry) ? flipPointZ(point.z) : point.z,
     ...transformPointWithSymmetry(point, center, symmetry),
   })),
   vias: route.vias.map((via) =>
@@ -257,7 +297,7 @@ const transformRouteBySymmetry = (
 
 const getSolveCacheEntrySymmetryVariant = (
   entry: SolveCacheEntry,
-  symmetry: DihedralSymmetry,
+  symmetry: SolveCacheSymmetry,
 ): SolveCacheEntry => {
   if (symmetry === "identity") {
     return entry;
@@ -547,7 +587,7 @@ export const getSolveCacheCandidates = (
   const candidates: SolveCacheCandidate[] = [];
 
   for (const sourceEntry of entries) {
-    for (const symmetry of DIHEDRAL_SYMMETRIES) {
+    for (const symmetry of SOLVE_CACHE_SYMMETRIES) {
       const entry = getSolveCacheEntrySymmetryVariant(sourceEntry, symmetry);
       if (entry.vecRaw.length !== vecRaw.length) {
         continue;
