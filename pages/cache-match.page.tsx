@@ -3,7 +3,7 @@ import { InteractiveGraphics } from "graphics-debug/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createMatchSampleWithPairCount } from "../lib/match-sample";
 import {
-  type DihedralSymmetry,
+  type SolveCacheSymmetry,
   canonicalizeDatasetSample,
 } from "../lib/solve-cache";
 import type { DatasetSample, HighDensityIntraNodeRoute } from "../lib/types";
@@ -31,7 +31,7 @@ import {
 type CacheMatchResponse = {
   entryIndex: number;
   distance: number;
-  symmetry: DihedralSymmetry;
+  symmetry: SolveCacheSymmetry;
   cacheSample: DatasetSample;
   appliedRoutes: HighDensityIntraNodeRoute[] | null;
   applyError: string | null;
@@ -152,9 +152,9 @@ export default function CacheMatchPage() {
               <h1 style={titleStyle}>Cache Match</h1>
               <p style={descriptionStyle}>
                 This page generates a canonicalized match sample, looks up the
-                nearest solve-cache entry across all 8 dihedral symmetries, and
-                applies the matched cache variant after reattachment, force
-                improvement, and DRC validation.
+                nearest solve-cache entry across all 16 planar and layer-flip
+                symmetries, and applies the matched cache variant after
+                reattachment, force improvement, and DRC validation.
               </p>
             </div>
 

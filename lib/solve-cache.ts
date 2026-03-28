@@ -193,7 +193,7 @@ const getPlanarSymmetry = (symmetry: SolveCacheSymmetry): DihedralSymmetry => {
     return symmetry.slice(0, -FLIP_Z_SUFFIX.length) as DihedralSymmetry;
   }
 
-  return symmetry;
+  return symmetry as DihedralSymmetry;
 };
 
 const flipPointZ = (z: number) => {
