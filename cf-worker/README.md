@@ -7,6 +7,7 @@ Routes:
 - `GET /health`
 - `POST /solve`
 - `POST /solve-batch`
+- `POST /solve-batch-binary`
 - `POST /admin/upsert-bucket`
 
 The worker stores z-bucketed cache variants in Workers KV under keys of the
@@ -26,6 +27,8 @@ Typical flow:
    `bun run scripts/seed-deployment-cache.ts --url https://... --pair-count 4 --admin-token ...`
 6. Benchmark the deployed worker with:
    `bun run scripts/profile-deployment.ts --url https://... --pair-count 4`
+7. Compare JSON compact versus packed binary batches with:
+   `bun run scripts/profile-binary-deployment.ts --url https://... --pair-count 4`
 
 `POST /solve` accepts a raw `NodeWithPortPoints` payload and returns either:
 
@@ -33,6 +36,12 @@ Typical flow:
 - a freshly solved and validated route set, which is then written back to KV.
 
 The returned routes are mapped back onto the caller's original connection names.
+
+`POST /solve-batch-binary` is the low-overhead batch path. It accepts a packed
+binary request containing up to 64 nodes encoded as quantized center/size data
+plus ordered point pairs, and it returns packed binary routes using quantized
+coordinates instead of verbose JSON route objects. This avoids repeating
+connection names and object keys for every point in the response.
 
 Notes:
 

@@ -16,6 +16,10 @@ import {
   upsertValidatedEntryAcrossBuckets,
   validateSolvedEntry,
 } from "./cache-logic";
+import {
+  decodeBinarySolveBatchRequest,
+  encodeBinarySolveBatchResponse,
+} from "./binary";
 import type {
   SolveBatchRequestBody,
   SolveBatchResponseBody,
@@ -25,6 +29,7 @@ import type {
   WorkerEnv,
   WorkerExecutionContext,
 } from "./contracts";
+import type { NodeWithPortPoints } from "../../lib/types";
 
 const MAX_BATCH_SIZE = 64;
 
@@ -32,6 +37,20 @@ const jsonResponse = (body: unknown, init?: ResponseInit) =>
   Response.json(body, {
     headers: {
       "cache-control": "no-store",
+    },
+    ...init,
+  });
+
+const toArrayBuffer = (body: Uint8Array | ArrayBuffer) =>
+  body instanceof Uint8Array
+    ? body.slice().buffer
+    : body.slice(0);
+
+const binaryResponse = (body: ArrayBuffer | Uint8Array, init?: ResponseInit) =>
+  new Response(toArrayBuffer(body), {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/octet-stream",
     },
     ...init,
   });
@@ -237,9 +256,11 @@ const solveAgainstLoadedBucket = async ({
 
 const handleSolveRequest = async (request: Request, env: WorkerEnv) => {
   const totalStart = performance.now();
+  const requestDecodeStart = performance.now();
   const requestBody = (await request.json()) as Partial<SolveBatchRequestBody> & {
     nodeWithPortPoints?: unknown;
   };
+  const requestDecodeMs = performance.now() - requestDecodeStart;
   const rawNodeWithPortPoints = requestBody.nodeWithPortPoints;
 
   if (!rawNodeWithPortPoints || typeof rawNodeWithPortPoints !== "object") {
@@ -288,34 +309,31 @@ const handleSolveRequest = async (request: Request, env: WorkerEnv) => {
   });
 
   result.responseBody.timingsMs.total = performance.now() - totalStart;
+  result.responseBody.timingsMs.requestDecode = requestDecodeMs;
 
   return jsonResponse(result.responseBody);
 };
 
-const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
+const validateBatchSize = (nodesWithPortPoints: NodeWithPortPoints[]) => {
+  if (nodesWithPortPoints.length === 0) {
+    return "nodesWithPortPoints must not be empty.";
+  }
+
+  if (nodesWithPortPoints.length > MAX_BATCH_SIZE) {
+    return `nodesWithPortPoints may contain at most ${MAX_BATCH_SIZE} nodes.`;
+  }
+
+  return null;
+};
+
+const solveBatchNodes = async (
+  nodesWithPortPoints: NodeWithPortPoints[],
+  env: WorkerEnv,
+  config: ReturnType<typeof getSolveWorkerConfig>,
+) => {
   const totalStart = performance.now();
-  const requestBody = (await request.json()) as Partial<SolveBatchRequestBody>;
-
-  if (!Array.isArray(requestBody.nodesWithPortPoints)) {
-    return errorResponse(400, "Request body must include nodesWithPortPoints.");
-  }
-
-  if (requestBody.nodesWithPortPoints.length === 0) {
-    return errorResponse(400, "nodesWithPortPoints must not be empty.");
-  }
-
-  if (requestBody.nodesWithPortPoints.length > MAX_BATCH_SIZE) {
-    return errorResponse(
-      400,
-      `nodesWithPortPoints may contain at most ${MAX_BATCH_SIZE} nodes.`,
-    );
-  }
-
-  const config = getSolveWorkerConfig(env);
-  const responseMode = requestBody.responseMode ?? "compact";
-
   const canonicalizeStart = performance.now();
-  const solveRequests = requestBody.nodesWithPortPoints.map((nodeWithPortPoints) =>
+  const solveRequests = nodesWithPortPoints.map((nodeWithPortPoints) =>
     canonicalizeSolveRequest(nodeWithPortPoints),
   );
   const canonicalizeEnd = performance.now();
@@ -443,14 +461,10 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
     }
   }
 
-  const responseBody: SolveBatchResponseBody = {
-    ok: true,
+  return {
     count: results.length,
     uniqueBucketCount: uniqueBuckets.size,
-    results:
-      responseMode === "full"
-        ? results
-        : results.map((result) => toCompactSolveBatchResult(result)),
+    results,
     summary: {
       cache: cacheCount,
       solver: solverCount,
@@ -466,8 +480,100 @@ const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
       kvWrite: kvWriteMs,
     },
   };
+};
+
+const handleSolveBatchRequest = async (request: Request, env: WorkerEnv) => {
+  const totalStart = performance.now();
+  const requestDecodeStart = performance.now();
+  const requestBody = (await request.json()) as Partial<SolveBatchRequestBody>;
+  const requestDecodeMs = performance.now() - requestDecodeStart;
+
+  if (!Array.isArray(requestBody.nodesWithPortPoints)) {
+    return errorResponse(400, "Request body must include nodesWithPortPoints.");
+  }
+
+  const batchSizeError = validateBatchSize(requestBody.nodesWithPortPoints);
+  if (batchSizeError) {
+    return errorResponse(400, batchSizeError);
+  }
+
+  const responseMode = requestBody.responseMode ?? "compact";
+  const config = getSolveWorkerConfig(env);
+  const batchResult = await solveBatchNodes(
+    requestBody.nodesWithPortPoints,
+    env,
+    config,
+  );
+
+  const responseBody: SolveBatchResponseBody = {
+    ok: true,
+    count: batchResult.count,
+    uniqueBucketCount: batchResult.uniqueBucketCount,
+    results:
+      responseMode === "full"
+        ? batchResult.results
+        : batchResult.results.map((result) => toCompactSolveBatchResult(result)),
+    summary: batchResult.summary,
+    timingsMs: {
+      ...batchResult.timingsMs,
+      requestDecode: requestDecodeMs,
+      total: performance.now() - totalStart,
+    },
+  };
 
   return jsonResponse(responseBody);
+};
+
+const handleSolveBatchBinaryRequest = async (
+  request: Request,
+  env: WorkerEnv,
+) => {
+  let nodesWithPortPoints: NodeWithPortPoints[];
+  const totalStart = performance.now();
+  const requestDecodeStart = performance.now();
+
+  try {
+    const decodedRequest = decodeBinarySolveBatchRequest(await request.arrayBuffer());
+    nodesWithPortPoints = decodedRequest.nodesWithPortPoints;
+  } catch (error) {
+    return errorResponse(
+      400,
+      error instanceof Error
+        ? error.message
+        : "Invalid binary solve-batch request.",
+    );
+  }
+  const requestDecodeMs = performance.now() - requestDecodeStart;
+
+  const batchSizeError = validateBatchSize(nodesWithPortPoints);
+  if (batchSizeError) {
+    return errorResponse(400, batchSizeError);
+  }
+
+  const config = getSolveWorkerConfig(env);
+  const batchResult = await solveBatchNodes(nodesWithPortPoints, env, config);
+
+  try {
+    return binaryResponse(
+      encodeBinarySolveBatchResponse({
+        ...batchResult,
+        timingsMs: {
+          ...batchResult.timingsMs,
+          requestDecode: requestDecodeMs,
+          total: performance.now() - totalStart,
+        },
+        traceThickness: config.traceWidth,
+        viaDiameter: config.viaDiameter,
+      }),
+    );
+  } catch (error) {
+    return errorResponse(
+      500,
+      error instanceof Error
+        ? error.message
+        : "Failed to serialize binary solve-batch response.",
+    );
+  }
 };
 
 const handleUpsertBucketRequest = async (
@@ -528,6 +634,13 @@ export default {
 
     if (request.method === "POST" && requestUrl.pathname === "/solve-batch") {
       return handleSolveBatchRequest(request, env);
+    }
+
+    if (
+      request.method === "POST" &&
+      requestUrl.pathname === "/solve-batch-binary"
+    ) {
+      return handleSolveBatchBinaryRequest(request, env);
     }
 
     if (

@@ -55,6 +55,7 @@ export type UpsertBucketRequestBody = {
 
 export type SolveTimingBreakdown = {
   total: number;
+  requestDecode?: number;
   kvRead?: number;
   kvGet?: number;
   bucketParse?: number;
@@ -96,6 +97,7 @@ export type SolveBatchResponseBody = {
   };
   timingsMs: {
     total: number;
+    requestDecode: number;
     canonicalize: number;
     kvGet: number;
     bucketParse: number;

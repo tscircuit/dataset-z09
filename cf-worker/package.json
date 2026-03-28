@@ -9,7 +9,8 @@
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "seed": "bun run scripts/seed-deployment-cache.ts",
     "profile": "bun run scripts/profile-deployment.ts",
-    "profile:batch": "bun run scripts/profile-batch-deployment.ts"
+    "profile:batch": "bun run scripts/profile-batch-deployment.ts",
+    "profile:binary": "bun run scripts/profile-binary-deployment.ts"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"
