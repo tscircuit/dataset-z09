@@ -338,6 +338,11 @@ export const createNearestNeighborVitePlugin = (): Plugin => {
             : nearestFailure
               ? `No reusable match among the first ${DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY} candidates. Nearest candidate failed DRC.`
               : `No reusable match among the first ${DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY} candidates.`;
+      const previewRoutes =
+        solveCacheMatch.match?.applied.routes ??
+        (nearestFailure?.failure.reason === "drc-failed"
+          ? nearestFailure.failure.improvedRoutes
+          : null);
 
       sendJson(response, 200, {
         entryIndex,
@@ -347,7 +352,8 @@ export const createNearestNeighborVitePlugin = (): Plugin => {
           displayedCandidate.entry.sample,
           displayedCandidate.entry.solution,
         ),
-        appliedRoutes: solveCacheMatch.match?.applied.routes ?? null,
+        appliedRoutes: previewRoutes,
+        appliedRoutesPassedDrc: solveCacheMatch.match !== null,
         applyError,
       });
     } catch (error) {

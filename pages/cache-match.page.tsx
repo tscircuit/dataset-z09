@@ -34,6 +34,7 @@ type CacheMatchResponse = {
   symmetry: SolveCacheSymmetry;
   cacheSample: DatasetSample;
   appliedRoutes: HighDensityIntraNodeRoute[] | null;
+  appliedRoutesPassedDrc: boolean;
   applyError: string | null;
 };
 
@@ -123,7 +124,7 @@ export default function CacheMatchPage() {
     cacheMatch?.appliedRoutes !== undefined
       ? {
           ...generatedSample,
-          solvable: true,
+          solvable: cacheMatch.appliedRoutesPassedDrc,
           solution: cacheMatch.appliedRoutes,
         }
       : generatedSample;
@@ -218,7 +219,9 @@ export default function CacheMatchPage() {
                   : error
                     ? "Failed"
                     : cacheMatch?.appliedRoutes
-                      ? "Applied"
+                      ? cacheMatch.appliedRoutesPassedDrc
+                        ? "Applied"
+                        : "Preview Only"
                       : cacheMatch
                         ? "Nearest Only"
                         : "Idle"}

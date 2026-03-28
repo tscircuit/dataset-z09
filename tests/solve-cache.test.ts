@@ -4,6 +4,7 @@ import {
   canonicalizeDatasetSample,
   createSolveCacheEntry,
   createValidatedSolveCacheEntry,
+  diagnoseSolveCacheEntryApplication,
   findSolveCacheMatch,
   getSolveCacheCandidates,
   tryApplySolveCacheEntry,
@@ -623,4 +624,76 @@ test("findSolveCacheMatch returns a later successful candidate when the nearest 
   expect(match.nearestFailure?.candidate.sourceEntry).toBe(invalidNearestEntry);
   expect(match.match?.candidate.sourceEntry).toBe(validEntry);
   expect(match.match?.applied.drc.ok).toBe(true);
+});
+
+test("diagnoseSolveCacheEntryApplication keeps improved preview routes on drc failure", () => {
+  const sample: DatasetSample = canonicalizeDatasetSample({
+    capacityMeshNodeId: "sample-preview-routes",
+    center: { x: 0, y: 0 },
+    width: 4,
+    height: 2,
+    availableZ: [0, 1],
+    solvable: true,
+    solution: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        traceThickness: 0.1,
+        viaDiameter: 0.3,
+        route: [
+          { x: -2, y: 0, z: 0 },
+          { x: 2, y: 0, z: 0 },
+        ],
+        vias: [],
+      },
+    ],
+    portPoints: [
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-a",
+        x: -2,
+        y: 0,
+        z: 0,
+      },
+      {
+        connectionName: "conn00",
+        rootConnectionName: "root00",
+        portPointId: "conn00-b",
+        x: 2,
+        y: 0,
+        z: 0,
+      },
+    ],
+  });
+
+  const invalidEntry = createSolveCacheEntry(sample, [
+    {
+      connectionName: "conn00",
+      rootConnectionName: "root00",
+      traceThickness: 0.1,
+      viaDiameter: 0.3,
+      route: [
+        { x: -2, y: 0, z: 0 },
+        { x: -2, y: 0, z: 1 },
+        { x: 2, y: 0, z: 1 },
+        { x: 2, y: 0, z: 0 },
+      ],
+      vias: [],
+    },
+  ]);
+
+  const result = diagnoseSolveCacheEntryApplication(sample, invalidEntry);
+
+  if (result.ok) {
+    throw new Error("Expected failed result");
+  }
+  expect(result.ok).toBe(false);
+  expect(result.reason).toBe("drc-failed");
+  if (result.reason !== "drc-failed") {
+    throw new Error("Expected drc-failed result");
+  }
+
+  expect(result.improvedRoutes).toHaveLength(1);
+  expect(result.rawRoutes).toHaveLength(1);
 });

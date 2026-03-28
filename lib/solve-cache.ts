@@ -83,6 +83,8 @@ export type SolveCacheApplyFailure =
   | {
       ok: false;
       reason: "drc-failed";
+      improvedRoutes: HighDensityIntraNodeRoute[];
+      rawRoutes: HighDensityIntraNodeRoute[];
       improvedDrc: DrcCheckResult;
       rawDrc: DrcCheckResult;
     };
@@ -771,6 +773,8 @@ const getValidRoutesForSample = (
   return {
     ok: false,
     reason: "drc-failed",
+    improvedRoutes,
+    rawRoutes: routes,
     improvedDrc,
     rawDrc,
   };
