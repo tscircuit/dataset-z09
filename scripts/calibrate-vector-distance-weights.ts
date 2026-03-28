@@ -2,9 +2,10 @@ import { join } from "node:path";
 import { createDeterministicRandom, getSampleSeed } from "../lib/generator";
 import {
   DEFAULT_MAX_SOLVE_CACHE_CANDIDATES_TO_TRY,
+  SOLVE_CACHE_SYMMETRIES,
   canonicalizeDatasetSample,
   diagnoseSolveCacheEntryApplication,
-  getSolveCacheCandidates,
+  getSolveCacheEntrySymmetryVariant,
   parseSolveCacheFile,
   type SolveCacheCandidate,
   type SolveCacheEntry,
@@ -66,7 +67,20 @@ type TrainingSample = {
   sampleId: string;
   targetEntryIndex: number;
   sample: DatasetSample;
-  candidates: TrainingCandidate[];
+  vecRaw: number[];
+  canonicalVecRaw: number[];
+};
+
+type SolveCacheVariant = {
+  sourceEntryIndex: number;
+  symmetry: SolveCacheCandidate["symmetry"];
+  entry: SolveCacheEntry;
+  canonicalVecRaw: number[];
+};
+
+type ScoredTrainingCandidate = {
+  candidate: TrainingCandidate;
+  distance: number;
 };
 
 type EpochMetrics = {
@@ -228,7 +242,7 @@ const centerLogits = (logits: WeightLogits): WeightLogits => {
   };
 };
 
-const getDistanceComponents = (
+const getDistanceComponentsFromCanonicalVectors = (
   leftVector: number[],
   rightVector: number[],
 ): DistanceComponents => {
@@ -238,8 +252,8 @@ const getDistanceComponents = (
     );
   }
 
-  const left = canonicalizeRawVecStructure(leftVector);
-  const right = canonicalizeRawVecStructure(rightVector);
+  const left = leftVector;
+  const right = rightVector;
   const headerLength = getRawVecHeaderLength(left) ?? 1;
   const ratioDelta = (left[0] ?? 0) - (right[0] ?? 0);
   const sameZIntersectionsDelta =
@@ -350,22 +364,29 @@ const createTrainingSamples = (entries: SolveCacheEntry[]) =>
   entries.map((targetEntry, targetEntryIndex) => {
     const sample = getDatasetSampleFromEntry(targetEntry);
     const vecRaw = computeVecRaw(sample);
-    const candidates = getSolveCacheCandidates(sample, entries)
-      .filter((candidate) => candidate.sourceEntry !== targetEntry)
-      .map((candidate) => ({
-        sourceEntryIndex: entries.indexOf(candidate.sourceEntry),
-        symmetry: candidate.symmetry,
-        entry: candidate.entry,
-        components: getDistanceComponents(vecRaw, candidate.entry.vecRaw),
-      }));
 
     return {
       sampleId: sample.capacityMeshNodeId,
       targetEntryIndex,
       sample,
-      candidates,
+      vecRaw,
+      canonicalVecRaw: canonicalizeRawVecStructure(vecRaw),
     } satisfies TrainingSample;
   });
+
+const createSolveCacheVariants = (entries: SolveCacheEntry[]) =>
+  entries.flatMap((sourceEntry, sourceEntryIndex) =>
+    SOLVE_CACHE_SYMMETRIES.map((symmetry) => {
+      const entry = getSolveCacheEntrySymmetryVariant(sourceEntry, symmetry);
+
+      return {
+        sourceEntryIndex,
+        symmetry,
+        entry,
+        canonicalVecRaw: canonicalizeRawVecStructure(entry.vecRaw),
+      };
+    }),
+  );
 
 const getDrcCacheKey = (
   targetEntryIndex: number,
@@ -395,15 +416,124 @@ const getCandidateVerdict = (
   return value.ok;
 };
 
+const swapHeapItems = (
+  heap: ScoredTrainingCandidate[],
+  leftIndex: number,
+  rightIndex: number,
+) => {
+  [heap[leftIndex], heap[rightIndex]] = [heap[rightIndex]!, heap[leftIndex]!];
+};
+
+const siftUpMaxHeap = (heap: ScoredTrainingCandidate[], index: number) => {
+  let currentIndex = index;
+
+  while (currentIndex > 0) {
+    const parentIndex = Math.floor((currentIndex - 1) / 2);
+    if (
+      (heap[parentIndex]?.distance ?? Number.NEGATIVE_INFINITY) >=
+      (heap[currentIndex]?.distance ?? Number.NEGATIVE_INFINITY)
+    ) {
+      break;
+    }
+
+    swapHeapItems(heap, parentIndex, currentIndex);
+    currentIndex = parentIndex;
+  }
+};
+
+const siftDownMaxHeap = (heap: ScoredTrainingCandidate[], index: number) => {
+  let currentIndex = index;
+
+  while (true) {
+    const leftChildIndex = currentIndex * 2 + 1;
+    const rightChildIndex = leftChildIndex + 1;
+    let nextIndex = currentIndex;
+
+    if (
+      leftChildIndex < heap.length &&
+      (heap[leftChildIndex]?.distance ?? Number.NEGATIVE_INFINITY) >
+        (heap[nextIndex]?.distance ?? Number.NEGATIVE_INFINITY)
+    ) {
+      nextIndex = leftChildIndex;
+    }
+
+    if (
+      rightChildIndex < heap.length &&
+      (heap[rightChildIndex]?.distance ?? Number.NEGATIVE_INFINITY) >
+        (heap[nextIndex]?.distance ?? Number.NEGATIVE_INFINITY)
+    ) {
+      nextIndex = rightChildIndex;
+    }
+
+    if (nextIndex === currentIndex) {
+      return;
+    }
+
+    swapHeapItems(heap, currentIndex, nextIndex);
+    currentIndex = nextIndex;
+  }
+};
+
 const rankCandidates = (
-  candidates: TrainingCandidate[],
+  trainingSample: TrainingSample,
+  variants: SolveCacheVariant[],
   weights: WeightVector,
-) =>
-  [...candidates].sort(
-    (left, right) =>
-      getWeightedDistance(left.components, weights) -
-      getWeightedDistance(right.components, weights),
-  );
+  limit: number,
+) => {
+  if (limit <= 0 || variants.length === 0) {
+    return [];
+  }
+
+  const topCandidates: ScoredTrainingCandidate[] = [];
+
+  for (const variant of variants) {
+    if (variant.sourceEntryIndex === trainingSample.targetEntryIndex) {
+      continue;
+    }
+
+    if (variant.entry.vecRaw.length !== trainingSample.vecRaw.length) {
+      continue;
+    }
+
+    const components = getDistanceComponentsFromCanonicalVectors(
+      trainingSample.canonicalVecRaw,
+      variant.canonicalVecRaw,
+    );
+    const distance = getWeightedDistance(components, weights);
+    if (topCandidates.length < limit) {
+      topCandidates.push({
+        candidate: {
+          sourceEntryIndex: variant.sourceEntryIndex,
+          symmetry: variant.symmetry,
+          entry: variant.entry,
+          components,
+        },
+        distance,
+      });
+      siftUpMaxHeap(topCandidates, topCandidates.length - 1);
+      continue;
+    }
+
+    if (distance >= (topCandidates[0]?.distance ?? Number.POSITIVE_INFINITY)) {
+      continue;
+    }
+
+    topCandidates[0] = {
+      candidate: {
+        sourceEntryIndex: variant.sourceEntryIndex,
+        symmetry: variant.symmetry,
+        entry: variant.entry,
+        components,
+      },
+      distance,
+    };
+    siftDownMaxHeap(topCandidates, 0);
+  }
+
+  return topCandidates
+    .sort((left, right) => left.distance - right.distance)
+    .map((entry) => entry.candidate);
+};
 
 const getTrainingSignal = (
   trainingSample: TrainingSample,
@@ -556,6 +686,7 @@ const writePartialResults = async (
 
 const trainWeights = async (
   trainingSamples: TrainingSample[],
+  variants: SolveCacheVariant[],
   epochs: number,
   batchSize: number,
   topK: number,
@@ -594,6 +725,8 @@ const trainWeights = async (
     const drcStats = { performed: 0, cached: 0 };
     const epochLearningRate = learningRate / Math.sqrt(epoch);
     let updates = 0;
+    const epochStartedAt = Date.now();
+    const totalBatches = Math.ceil(shuffledSamples.length / batchSize);
 
     for (
       let batchStart = 0;
@@ -608,11 +741,21 @@ const trainWeights = async (
         0, 0, 0, 0, 0, 0,
       ];
       let batchGradientSamples = 0;
+      const completedBatches = Math.floor(batchStart / batchSize);
+
+      if (totalBatches > 1) {
+        const elapsedSeconds = ((Date.now() - epochStartedAt) / 1000).toFixed(1);
+        console.log(
+          `epoch=${epoch.toString().padStart(2)} batchStart=${completedBatches + 1}/${totalBatches} samples=${batchStart}/${shuffledSamples.length} elapsed=${elapsedSeconds}s`,
+        );
+      }
 
       for (const trainingSample of epochBatch) {
         const rankedCandidates = rankCandidates(
-          trainingSample.candidates,
+          trainingSample,
+          variants,
           weights,
+          maxProbeRank,
         );
         const signal = getTrainingSignal(
           trainingSample,
@@ -734,11 +877,24 @@ const trainWeights = async (
       weights = nextWeights;
       if (weightDelta > UPDATE_EPSILON) {
         updates += 1;
-      };
+      }
+
+      if (totalBatches > 1) {
+        const completedSamples = Math.min(
+          batchStart + epochBatch.length,
+          shuffledSamples.length,
+        );
+        const completedBatchCount = Math.ceil(completedSamples / batchSize);
+        const elapsedSeconds = ((Date.now() - epochStartedAt) / 1000).toFixed(1);
+        console.log(
+          `epoch=${epoch.toString().padStart(2)} batchDone=${completedBatchCount}/${totalBatches} samples=${completedSamples}/${shuffledSamples.length} elapsed=${elapsedSeconds}s`,
+        );
+      }
     }
 
     const evaluation = evaluateWeights(
       trainingSamples,
+      variants,
       weights,
       topK,
       maxProbeRank,
@@ -823,12 +979,20 @@ const trainWeights = async (
     epochHistory,
     bestEvaluation:
       bestEvaluation ??
-      evaluateWeights(trainingSamples, bestWeights, topK, maxProbeRank, drcCache),
+      evaluateWeights(
+        trainingSamples,
+        variants,
+        bestWeights,
+        topK,
+        maxProbeRank,
+        drcCache,
+      ),
   };
 };
 
 const evaluateWeights = (
   trainingSamples: TrainingSample[],
+  variants: SolveCacheVariant[],
   weights: WeightVector,
   topK: number,
   maxProbeRank: number,
@@ -840,7 +1004,12 @@ const evaluateWeights = (
   let firstPassRankCount = 0;
 
   for (const trainingSample of trainingSamples) {
-    const rankedCandidates = rankCandidates(trainingSample.candidates, weights);
+    const rankedCandidates = rankCandidates(
+      trainingSample,
+      variants,
+      weights,
+      maxProbeRank,
+    );
     const signal = getTrainingSignal(
       trainingSample,
       rankedCandidates,
@@ -911,13 +1080,15 @@ const main = async () => {
 
   const entries = await loadSolveCacheEntries(pairCount);
   const trainingSamples = createTrainingSamples(entries);
+  const variants = createSolveCacheVariants(entries);
 
   console.log(
-    `Loaded ${trainingSamples.length} cache samples for pairCount=${pairCount} batchSize=${Math.min(batchSize, trainingSamples.length)} topK=${topK} maxProbeRank=${maxProbeRank} epochs=${epochs}`,
+    `Loaded ${trainingSamples.length} cache samples and ${variants.length} symmetry variants for pairCount=${pairCount} batchSize=${Math.min(batchSize, trainingSamples.length)} topK=${topK} maxProbeRank=${maxProbeRank} epochs=${epochs}`,
   );
 
   const { weights, epochHistory, bestEvaluation } = await trainWeights(
     trainingSamples,
+    variants,
     epochs,
     batchSize,
     topK,

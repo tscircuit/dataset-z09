@@ -295,7 +295,7 @@ const transformRouteBySymmetry = (
   })),
 });
 
-const getSolveCacheEntrySymmetryVariant = (
+export const getSolveCacheEntrySymmetryVariant = (
   entry: SolveCacheEntry,
   symmetry: SolveCacheSymmetry,
 ): SolveCacheEntry => {

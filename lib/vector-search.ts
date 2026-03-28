@@ -20,12 +20,12 @@ const RAW_VEC_HEADER_LENGTH = 4;
 const RAW_VEC_PAIR_COMPONENT_COUNT = 8;
 
 export const VECTOR_DISTANCE_WEIGHTS = {
-  ratio: 0.1449,
-  sameZIntersections: 0.1891,
-  differentZIntersections: 0.1459,
-  entryExitZChanges: 0.2007,
-  z: 0.2247,
-  distWeight: 0.0946,
+  ratio: 0.0822,
+  sameZIntersections: 0.2378,
+  differentZIntersections: 0.0712,
+  entryExitZChanges: 0.252,
+  z: 0.3123,
+  distWeight: 0.0446,
 } as const;
 
 export const getRawVecHeaderLength = (vector: number[]) => {
