@@ -10,11 +10,7 @@
     "seed": "bun run scripts/seed-vectorize-index.ts",
     "seed:vectorize": "bun run scripts/seed-vectorize-index.ts",
     "profile": "bun run scripts/profile-deployment.ts",
-    "profile:kv": "bun run scripts/profile-kv-read-deployment.ts",
-    "profile:batch": "bun run scripts/profile-batch-deployment.ts",
-    "profile:binary": "bun run scripts/profile-binary-deployment.ts",
-    "profile:vectorize": "bun run scripts/profile-vectorize-deployment.ts",
-    "profile:parallel": "bun run scripts/profile-parallel-deployment.ts"
+    "profile:kv": "bun run scripts/profile-kv-read-deployment.ts"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"

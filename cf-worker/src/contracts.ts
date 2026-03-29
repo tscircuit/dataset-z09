@@ -65,17 +65,6 @@ export type SolveRequestBody = {
   nodeWithPortPoints: NodeWithPortPoints;
 };
 
-export type SolveBatchRequestBody = {
-  nodesWithPortPoints: NodeWithPortPoints[];
-  responseMode?: "compact" | "full";
-};
-
-export type UpsertBucketRequestBody = {
-  pointPairCount: number;
-  zSignature: string;
-  entries: WorkerBucketEntry[];
-};
-
 export type UpsertVectorizeEntriesRequestBody = {
   pointPairCount: number;
   entries: WorkerBucketEntry[];
@@ -105,32 +94,4 @@ export type SolveResponseBody = {
   timingsMs: SolveTimingBreakdown;
   solverSolved?: boolean;
   message?: string;
-};
-
-export type SolveBatchResponseBody = {
-  ok: boolean;
-  count: number;
-  uniqueBucketCount: number;
-  results:
-    | SolveResponseBody[]
-    | Array<{
-        source: "cache" | "solver" | "none";
-        routes: HighDensityIntraNodeRoute[] | null;
-        message?: string;
-      }>;
-  summary: {
-    cache: number;
-    solver: number;
-    none: number;
-  };
-  timingsMs: {
-    total: number;
-    requestDecode: number;
-    canonicalize: number;
-    kvGet: number;
-    bucketParse: number;
-    ranking: number;
-    solve: number;
-    kvWrite: number;
-  };
 };

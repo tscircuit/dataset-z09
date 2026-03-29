@@ -1,22 +1,12 @@
 # Cloudflare Worker Solve Cache
 
-This Worker exposes a small HTTP API around the dataset solve-cache pipeline.
+This Worker exposes a single-node solve-cache API.
 
 Routes:
 
 - `GET /health`
 - `GET /debug/kv-read`
-- `POST /debug/echo-binary`
-- `POST /debug/echo-json`
-- `POST /debug/stage/decode-binary`
-- `POST /debug/stage/canonicalize-binary`
-- `POST /debug/stage/solve-batch-lite-binary`
-- `POST /debug/stage/vectorize-query-binary`
-- `POST /debug/stage/vectorize-fetch-binary`
-- `POST /debug/stage/vectorize-match-binary`
 - `POST /solve`
-- `POST /solve-batch`
-- `POST /solve-batch-binary`
 - `POST /admin/upsert-vectorize-entries`
 
 The worker uses Vectorize for candidate search and Workers KV for full entry
@@ -28,7 +18,7 @@ Typical flow:
 1. Create a KV namespace:
    `bunx wrangler kv namespace create SOLVE_CACHE`
 2. Copy the returned `id` and `preview_id` into `wrangler.toml`.
-3. Set an admin token for bucket seeding:
+3. Set an admin token:
    `bunx wrangler secret put ADMIN_TOKEN`
 4. Deploy the worker:
    `bun run deploy`
@@ -36,12 +26,8 @@ Typical flow:
    `bun run scripts/seed-vectorize-index.ts --url https://... --pair-count 4 --admin-token ...`
 6. Benchmark the deployed worker with:
    `bun run scripts/profile-deployment.ts --url https://... --pair-count 4`
-7. Compare JSON compact versus packed binary batches with:
-   `bun run scripts/profile-binary-deployment.ts --url https://... --pair-count 4`
-8. Benchmark plain health vs a tiny KV read with:
+7. Benchmark plain health vs a tiny KV read with:
    `bun run scripts/profile-kv-read-deployment.ts --url https://...`
-9. Compare the current Vectorize stages with:
-   `bun run scripts/profile-vectorize-deployment.ts --url https://... --pair-count 4`
 
 `POST /solve` accepts a raw `NodeWithPortPoints` payload and returns either:
 
@@ -49,38 +35,17 @@ Typical flow:
 - a freshly solved and validated route set, which is then written back to KV.
 
 The returned routes are mapped back onto the caller's original connection names.
-Cache hits now use the single-node Vectorize path: query the nearest entries,
-fetch those entry payloads from KV, and then reattach and validate them.
-
-`POST /solve-batch-binary` is the low-overhead batch path. It accepts a packed
-binary request containing up to 64 nodes encoded as quantized center/size data
-plus ordered point pairs, and it returns packed binary routes using quantized
-coordinates instead of verbose JSON route objects. This avoids repeating
-connection names and object keys for every point in the response.
+Cache hits use the single-node Vectorize path: query the nearest entries, fetch
+those entry payloads from KV, and then reattach and validate them.
 
 `GET /debug/kv-read` is a minimal diagnostic endpoint that reads one tiny KV key
 and returns basic value metadata. It is useful for separating network /
 front-door latency from KV access latency using an external timer.
 
-The `POST /debug/stage/*` endpoints are cumulative stage probes for the packed
-binary batch request:
-
-- `decode-binary`: body read + binary decode
-- `canonicalize-binary`: decode + canonicalization + z-signature bucketing
-- `solve-batch-lite-binary`: full solve-cache batch path with a tiny JSON response
-- `vectorize-query-binary`: canonicalization + Vectorize ANN queries only
-- `vectorize-fetch-binary`: Vectorize ANN queries + KV fetch of the top ids
-- `vectorize-match-binary`: Vectorize ANN queries + KV fetch + reattach/DRC match
-
-The Vectorize shadow path currently targets pair-count `4` only. It stores one
-vector per transformed solve-cache entry, keyed by `entryId`. The full entry
-payload remains in KV under `entry:${entryId}`, so Vectorize only needs to
-return ids for the top matches.
-
 Notes:
 
-- `wrangler.toml` ships with placeholder KV ids on purpose. Replace them after
-  creating the namespace.
+- `wrangler.toml` ships with real bindings for the current deployment; adjust if
+  you create new namespaces or indexes.
 - The seed script expands each validated cache entry across all solve-cache
   symmetries and uploads those transformed variants to KV + Vectorize through
   the authenticated admin endpoint.
