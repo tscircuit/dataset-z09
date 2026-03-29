@@ -32,6 +32,7 @@ import type {
 import type { NodeWithPortPoints } from "../../lib/types";
 
 const MAX_BATCH_SIZE = 64;
+const KV_PING_KEY = "__kv_ping__";
 
 const jsonResponse = (body: unknown, init?: ResponseInit) =>
   Response.json(body, {
@@ -46,14 +47,37 @@ const toArrayBuffer = (body: Uint8Array | ArrayBuffer) =>
     ? body.slice().buffer
     : body.slice(0);
 
-const binaryResponse = (body: ArrayBuffer | Uint8Array, init?: ResponseInit) =>
-  new Response(toArrayBuffer(body), {
-    headers: {
-      "cache-control": "no-store",
-      "content-type": "application/octet-stream",
-    },
+const binaryResponse = (
+  request: Request,
+  body: ArrayBuffer | Uint8Array,
+  init?: ResponseInit,
+) => {
+  const responseHeaders = new Headers(init?.headers);
+  responseHeaders.set("cache-control", "no-store");
+  responseHeaders.set("content-type", "application/octet-stream");
+  responseHeaders.set("vary", "accept-encoding");
+
+  const acceptsEncoding = request.headers.get("accept-encoding") ?? "";
+  const shouldGzip = acceptsEncoding.includes("gzip");
+  const responseBody = toArrayBuffer(body);
+
+  if (shouldGzip) {
+    responseHeaders.set("content-encoding", "gzip");
+    const responseStream = new Response(responseBody).body;
+
+    if (responseStream) {
+      return new Response(responseStream.pipeThrough(new CompressionStream("gzip")), {
+        ...init,
+        headers: responseHeaders,
+      });
+    }
+  }
+
+  return new Response(responseBody, {
     ...init,
+    headers: responseHeaders,
   });
+};
 
 const errorResponse = (status: number, message: string) =>
   jsonResponse(
@@ -90,6 +114,24 @@ const handleHealthRequest = () =>
     service: "dataset-z09-solve-cache",
   });
 
+const handleDebugKvReadRequest = async (env: WorkerEnv) => {
+  const totalStart = performance.now();
+  const kvGetStart = performance.now();
+  const value = await env.SOLVE_CACHE.get(KV_PING_KEY, "text");
+  const kvGetEnd = performance.now();
+
+  return jsonResponse({
+    ok: true,
+    key: KV_PING_KEY,
+    hasValue: value !== null,
+    valueLength: value?.length ?? 0,
+    timingsMs: {
+      total: performance.now() - totalStart,
+      kvGet: kvGetEnd - kvGetStart,
+    },
+  });
+};
+
 const createCacheLookupTimings = (
   kvGetMs: number,
   bucketParseMs: number,
@@ -109,6 +151,21 @@ const toCompactSolveBatchResult = (responseBody: SolveResponseBody) => ({
   routes: responseBody.routes,
   ...(responseBody.message ? { message: responseBody.message } : {}),
 });
+
+const websocketErrorMessage = (message: string) =>
+  JSON.stringify({
+    ok: false,
+    message,
+  });
+
+const WebSocketPairCtor = (
+  globalThis as typeof globalThis & {
+    WebSocketPair: new () => {
+      0: WebSocket;
+      1: WebSocket & { accept(): void };
+    };
+  }
+).WebSocketPair;
 
 const solveAgainstLoadedBucket = async ({
   solveRequest,
@@ -528,34 +585,54 @@ const handleSolveBatchBinaryRequest = async (
   request: Request,
   env: WorkerEnv,
 ) => {
+  const binaryResult = await solveBatchBinaryPayload(await request.arrayBuffer(), env);
+
+  if (!binaryResult.ok) {
+    return errorResponse(binaryResult.status, binaryResult.message);
+  }
+
+  return binaryResponse(request, binaryResult.body);
+};
+
+const solveBatchBinaryPayload = async (
+  payload: ArrayBuffer | Uint8Array,
+  env: WorkerEnv,
+) => {
   let nodesWithPortPoints: NodeWithPortPoints[];
   const totalStart = performance.now();
   const requestDecodeStart = performance.now();
 
   try {
-    const decodedRequest = decodeBinarySolveBatchRequest(await request.arrayBuffer());
+    const decodedRequest = decodeBinarySolveBatchRequest(payload);
     nodesWithPortPoints = decodedRequest.nodesWithPortPoints;
   } catch (error) {
-    return errorResponse(
-      400,
-      error instanceof Error
-        ? error.message
-        : "Invalid binary solve-batch request.",
-    );
+    return {
+      ok: false as const,
+      status: 400,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Invalid binary solve-batch request.",
+    };
   }
   const requestDecodeMs = performance.now() - requestDecodeStart;
 
   const batchSizeError = validateBatchSize(nodesWithPortPoints);
   if (batchSizeError) {
-    return errorResponse(400, batchSizeError);
+    return {
+      ok: false as const,
+      status: 400,
+      message: batchSizeError,
+    };
   }
 
   const config = getSolveWorkerConfig(env);
   const batchResult = await solveBatchNodes(nodesWithPortPoints, env, config);
 
   try {
-    return binaryResponse(
-      encodeBinarySolveBatchResponse({
+    return {
+      ok: true as const,
+      body: encodeBinarySolveBatchResponse({
         ...batchResult,
         timingsMs: {
           ...batchResult.timingsMs,
@@ -565,15 +642,78 @@ const handleSolveBatchBinaryRequest = async (
         traceThickness: config.traceWidth,
         viaDiameter: config.viaDiameter,
       }),
-    );
+    };
   } catch (error) {
-    return errorResponse(
-      500,
-      error instanceof Error
-        ? error.message
-        : "Failed to serialize binary solve-batch response.",
-    );
+    return {
+      ok: false as const,
+      status: 500,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to serialize binary solve-batch response.",
+    };
   }
+};
+
+const handleSolveBatchBinaryWebSocket = (request: Request, env: WorkerEnv) => {
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return errorResponse(426, "Expected Upgrade: websocket.");
+  }
+
+  const webSocketPair = new WebSocketPairCtor();
+  const client = webSocketPair[0];
+  const server = webSocketPair[1];
+
+  server.accept();
+
+  server.addEventListener("message", async (event: MessageEvent) => {
+    try {
+      let payload: ArrayBuffer | Uint8Array | null = null;
+
+      if (event.data instanceof ArrayBuffer || event.data instanceof Uint8Array) {
+        payload = event.data;
+      } else if (event.data instanceof Blob) {
+        payload = await event.data.arrayBuffer();
+      }
+
+      if (!payload) {
+        server.send(
+          websocketErrorMessage(
+            "Binary WebSocket messages are required for /ws/solve-batch-binary.",
+          ),
+        );
+        return;
+      }
+
+      const binaryResult = await solveBatchBinaryPayload(payload, env);
+      if (!binaryResult.ok) {
+        server.send(websocketErrorMessage(binaryResult.message));
+        return;
+      }
+
+      server.send(binaryResult.body.buffer.slice(
+        binaryResult.body.byteOffset,
+        binaryResult.body.byteOffset + binaryResult.body.byteLength,
+      ));
+    } catch (error) {
+      server.send(
+        websocketErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Unexpected websocket solve-batch failure.",
+        ),
+      );
+    }
+  });
+
+  server.addEventListener("close", () => {
+    server.close();
+  });
+
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
+  } as ResponseInit & { webSocket: WebSocket });
 };
 
 const handleUpsertBucketRequest = async (
@@ -628,6 +768,10 @@ export default {
       return handleHealthRequest();
     }
 
+    if (request.method === "GET" && requestUrl.pathname === "/debug/kv-read") {
+      return handleDebugKvReadRequest(env);
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/solve") {
       return handleSolveRequest(request, env);
     }
@@ -641,6 +785,13 @@ export default {
       requestUrl.pathname === "/solve-batch-binary"
     ) {
       return handleSolveBatchBinaryRequest(request, env);
+    }
+
+    if (
+      request.method === "GET" &&
+      requestUrl.pathname === "/ws/solve-batch-binary"
+    ) {
+      return handleSolveBatchBinaryWebSocket(request, env);
     }
 
     if (

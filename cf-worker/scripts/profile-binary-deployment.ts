@@ -6,6 +6,7 @@ import {
   decodeBinarySolveBatchResponse,
   encodeBinarySolveBatchRequest,
 } from "../src/binary";
+import { gunzipSync } from "node:zlib";
 
 const DEFAULT_PAIR_COUNT = 4;
 const DEFAULT_BATCH_SIZE = 64;
@@ -134,12 +135,18 @@ const postBinarySolveBatchRequest = async (
     );
   }
 
+  const contentEncoding = response.headers.get("content-encoding");
+  const decodedBodyBuffer =
+    contentEncoding === "gzip"
+      ? gunzipSync(new Uint8Array(bodyBuffer)).buffer
+      : bodyBuffer;
+
   return {
     elapsedMs: endedAt - startedAt,
     requestBytes: requestBody.byteLength,
     responseBytes: bodyBuffer.byteLength,
     body: decodeBinarySolveBatchResponse(
-      bodyBuffer,
+      decodedBodyBuffer,
       encodedRequest.connectionNameLists,
     ),
   };

@@ -2,7 +2,7 @@ import type { HighDensityIntraNodeRoute, NodeWithPortPoints } from "../../lib/ty
 import type { SolveResponseBody } from "./contracts";
 
 const REQUEST_MAGIC = "DZB1";
-const RESPONSE_MAGIC = "DZS2";
+const RESPONSE_MAGIC = "DZS3";
 const COORDINATE_SCALE = 100;
 const ROUTING_SCALE = 1_000;
 const REQUEST_HEADER_SIZE = 8;
@@ -234,7 +234,7 @@ const getResponseSize = (payload: BinarySolveBatchResponsePayload) =>
 
         return (
           routeTotalSize +
-          8 +
+          10 +
           route.route.length * 6 +
           route.vias.length * 4
         );
@@ -419,20 +419,12 @@ export const encodeBinarySolveBatchResponse = (
     writer.writeUint8(0);
 
     for (const route of routes) {
-      if (
-        route.traceThickness !== payload.traceThickness ||
-        route.viaDiameter !== payload.viaDiameter
-      ) {
-        throw new Error(
-          "Binary solve-batch responses require uniform traceThickness and viaDiameter.",
-        );
-      }
-
       writer.writeUint8(getConnectionIndex(route.connectionName));
       writer.writeUint8(0);
+      writer.writeUint16(quantizeUnsigned(route.traceThickness, ROUTING_SCALE));
+      writer.writeUint16(quantizeUnsigned(route.viaDiameter, ROUTING_SCALE));
       writer.writeUint16(route.route.length);
       writer.writeUint16(route.vias.length);
-      writer.writeUint16(0);
 
       for (const routePoint of route.route) {
         writer.writeInt16(quantizeSigned(routePoint.x, COORDINATE_SCALE));
@@ -502,9 +494,10 @@ export const decodeBinarySolveBatchResponse = (
     for (let routeIndex = 0; routeIndex < routeCount; routeIndex += 1) {
       const connectionIndex = reader.readUint8();
       reader.readUint8();
+      const traceThickness = dequantize(reader.readUint16(), ROUTING_SCALE);
+      const viaDiameter = dequantize(reader.readUint16(), ROUTING_SCALE);
       const pointCount = reader.readUint16();
       const viaCount = reader.readUint16();
-      reader.readUint16();
       const routePoints: HighDensityIntraNodeRoute["route"] = [];
       const vias: HighDensityIntraNodeRoute["vias"] = [];
 
