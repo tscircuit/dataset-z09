@@ -10,8 +10,31 @@ export type KvNamespaceLike = {
   put(key: string, value: string): Promise<void>;
 };
 
+export type VectorizeQueryMatchLike = {
+  id: string;
+  score: number;
+};
+
+export type VectorizeQueryResultLike = {
+  count: number;
+  matches: VectorizeQueryMatchLike[];
+};
+
+export type VectorizeLike = {
+  query(
+    vector: number[],
+    options?: {
+      topK?: number;
+      returnValues?: boolean;
+      returnMetadata?: boolean | "all" | "indexed" | "none";
+    },
+  ): Promise<VectorizeQueryResultLike>;
+  upsert(vectors: Array<{ id: string; values: number[] }>): Promise<unknown>;
+};
+
 export type WorkerEnv = {
   SOLVE_CACHE: KvNamespaceLike;
+  SOLVE_CACHE_VECTOR_P4?: VectorizeLike;
   ADMIN_TOKEN?: string;
   MAX_SOLVE_CACHE_CANDIDATES_TO_TRY?: string;
   SOLVER_MAX_ITERATIONS?: string;
@@ -50,6 +73,11 @@ export type SolveBatchRequestBody = {
 export type UpsertBucketRequestBody = {
   pointPairCount: number;
   zSignature: string;
+  entries: WorkerBucketEntry[];
+};
+
+export type UpsertVectorizeEntriesRequestBody = {
+  pointPairCount: number;
   entries: WorkerBucketEntry[];
 };
 

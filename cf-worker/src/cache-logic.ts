@@ -19,11 +19,13 @@ import type {
 } from "../../lib/types";
 import { computeVecRaw } from "../../lib/vec-raw";
 import {
+  canonicalizeVector,
   getVectorDistanceIgnoringZ,
   getVectorZSignature,
 } from "../../lib/vector-search";
 import type {
   KvNamespaceLike,
+  VectorizeLike,
   WorkerBucket,
   WorkerBucketEntry,
 } from "./contracts";
@@ -33,15 +35,7 @@ const DEFAULT_SOLVER_MAX_ITERATIONS = 250_000;
 const DEFAULT_TRACE_WIDTH = 0.1;
 const DEFAULT_VIA_DIAMETER = 0.3;
 const BUCKET_SCHEMA_VERSION = 1;
-const WORKER_BUCKET_MEMORY_CACHE_TTL_MS = 5 * 60 * 1_000;
-
-const workerBucketMemoryCache = new Map<
-  string,
-  {
-    bucket: WorkerBucket;
-    cachedAt: number;
-  }
->();
+const VECTORIZE_ENTRY_KEY_PREFIX = "entry:";
 
 type CanonicalizedRequest = {
   canonicalNodeWithPortPoints: NodeWithPortPoints;
@@ -134,29 +128,8 @@ const getWorkerBucketEntryId = (entry: SolveCacheEntry) =>
 export const getBucketKey = (pointPairCount: number, zSignature: string) =>
   `${pointPairCount}:${zSignature}`;
 
-export const getWorkerBucketFromMemoryCache = (bucketKey: string) => {
-  const cachedEntry = workerBucketMemoryCache.get(bucketKey);
-  if (!cachedEntry) {
-    return null;
-  }
-
-  if (Date.now() - cachedEntry.cachedAt > WORKER_BUCKET_MEMORY_CACHE_TTL_MS) {
-    workerBucketMemoryCache.delete(bucketKey);
-    return null;
-  }
-
-  return cachedEntry.bucket;
-};
-
-export const setWorkerBucketInMemoryCache = (
-  bucketKey: string,
-  bucket: WorkerBucket,
-) => {
-  workerBucketMemoryCache.set(bucketKey, {
-    bucket,
-    cachedAt: Date.now(),
-  });
-};
+export const getWorkerEntryKey = (entryId: string) =>
+  `${VECTORIZE_ENTRY_KEY_PREFIX}${entryId}`;
 
 export const canonicalizeSolveRequest = (
   nodeWithPortPoints: NodeWithPortPoints,
@@ -227,21 +200,12 @@ export const loadWorkerBucket = async (
   kv: KvNamespaceLike,
   pointPairCount: number,
   zSignature: string,
-) => {
-  const bucketKey = getBucketKey(pointPairCount, zSignature);
-  const cachedBucket = getWorkerBucketFromMemoryCache(bucketKey);
-  if (cachedBucket) {
-    return cachedBucket;
-  }
-
-  const bucket = parseWorkerBucket(
-    await kv.get(bucketKey, "text"),
+) =>
+  parseWorkerBucket(
+    await kv.get(getBucketKey(pointPairCount, zSignature), "text"),
     pointPairCount,
     zSignature,
   );
-  setWorkerBucketInMemoryCache(bucketKey, bucket);
-  return bucket;
-};
 
 export const getWorkerBucketRawText = (
   kv: KvNamespaceLike,
@@ -282,12 +246,56 @@ export const saveWorkerBucket = async (
   kv: KvNamespaceLike,
   bucket: WorkerBucket,
 ) => {
-  const bucketKey = getBucketKey(bucket.pointPairCount, bucket.zSignature);
-  await kv.put(
-    bucketKey,
-    serializeWorkerBucket(bucket),
+  await kv.put(getBucketKey(bucket.pointPairCount, bucket.zSignature), serializeWorkerBucket(bucket));
+};
+
+export const saveWorkerEntries = async (
+  kv: KvNamespaceLike,
+  entries: WorkerBucketEntry[],
+) => {
+  await Promise.all(
+    entries.map((entry) =>
+      kv.put(getWorkerEntryKey(entry.entryId), JSON.stringify(entry)),
+    ),
   );
-  setWorkerBucketInMemoryCache(bucketKey, bucket);
+};
+
+export const loadWorkerEntriesByIds = async (
+  kv: KvNamespaceLike,
+  entryIds: string[],
+) => {
+  const rawEntries = await Promise.all(
+    entryIds.map((entryId) => kv.get(getWorkerEntryKey(entryId), "text")),
+  );
+
+  const entries: WorkerBucketEntry[] = [];
+
+  for (const rawEntry of rawEntries) {
+    if (!rawEntry) {
+      continue;
+    }
+
+    entries.push(JSON.parse(rawEntry) as WorkerBucketEntry);
+  }
+
+  return entries;
+};
+
+export const getVectorizeValuesForVecRaw = (vecRaw: number[]) =>
+  canonicalizeVector(vecRaw);
+
+export const getVectorizeValuesForEntry = (entry: Pick<WorkerBucketEntry, "vecRaw">) =>
+  getVectorizeValuesForVecRaw(entry.vecRaw);
+
+export const getVectorizeBindingForPairCount = (
+  env: { SOLVE_CACHE_VECTOR_P4?: VectorizeLike },
+  pointPairCount: number,
+) => {
+  if (pointPairCount === 4) {
+    return env.SOLVE_CACHE_VECTOR_P4 ?? null;
+  }
+
+  return null;
 };
 
 const insertTopCandidate = (
@@ -474,6 +482,26 @@ export const mergeEntriesIntoBucket = async (
   const mergedBucket = mergeBucketEntries(existingBucket, entries);
   await saveWorkerBucket(kv, mergedBucket);
   return mergedBucket;
+};
+
+export const upsertEntriesIntoVectorize = async (
+  env: { SOLVE_CACHE_VECTOR_P4?: VectorizeLike },
+  pointPairCount: number,
+  entries: WorkerBucketEntry[],
+) => {
+  const index = getVectorizeBindingForPairCount(env, pointPairCount);
+  if (!index || entries.length === 0) {
+    return null;
+  }
+
+  await index.upsert(
+    entries.map((entry) => ({
+      id: entry.entryId,
+      values: getVectorizeValuesForEntry(entry),
+    })),
+  );
+
+  return true;
 };
 
 export const validateSolvedEntry = (

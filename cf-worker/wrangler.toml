@@ -7,6 +7,10 @@ kv_namespaces = [
   { binding = "SOLVE_CACHE", id = "ac0047d6f8a3444ebf65aeb9d72c1011", preview_id = "5190065978e7479e8e7d104fe3226ccb" }
 ]
 
+vectorize = [
+  { binding = "SOLVE_CACHE_VECTOR_P4", index_name = "dataset-z09-solve-cache-p4" }
+]
+
 routes = [
   { pattern = "hd-cache.tscircuit.com", custom_domain = true }
 ]
