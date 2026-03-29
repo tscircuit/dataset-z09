@@ -10,9 +10,6 @@ Routes:
 - `POST /debug/echo-json`
 - `POST /debug/stage/decode-binary`
 - `POST /debug/stage/canonicalize-binary`
-- `POST /debug/stage/load-buckets-binary`
-- `POST /debug/stage/parse-buckets-binary`
-- `POST /debug/stage/match-binary`
 - `POST /debug/stage/solve-batch-lite-binary`
 - `POST /debug/stage/vectorize-query-binary`
 - `POST /debug/stage/vectorize-fetch-binary`
@@ -20,12 +17,11 @@ Routes:
 - `POST /solve`
 - `POST /solve-batch`
 - `POST /solve-batch-binary`
-- `POST /admin/upsert-bucket`
 - `POST /admin/upsert-vectorize-entries`
 
-The worker stores z-bucketed cache variants in Workers KV under keys of the
-form `${pairCount}:${zSignature}`. Each bucket contains only the transformed
-solve-cache entries whose canonical z signature matches that key.
+The worker uses Vectorize for candidate search and Workers KV for full entry
+payloads. Vectorize stores one vector per transformed solve-cache entry, and KV
+stores the corresponding entry JSON under `entry:${entryId}`.
 
 Typical flow:
 
@@ -37,16 +33,14 @@ Typical flow:
 4. Deploy the worker:
    `bun run deploy`
 5. Seed one or more local `solve-cache-*.json` files with:
-   `bun run scripts/seed-deployment-cache.ts --url https://... --pair-count 4 --admin-token ...`
+   `bun run scripts/seed-vectorize-index.ts --url https://... --pair-count 4 --admin-token ...`
 6. Benchmark the deployed worker with:
    `bun run scripts/profile-deployment.ts --url https://... --pair-count 4`
 7. Compare JSON compact versus packed binary batches with:
    `bun run scripts/profile-binary-deployment.ts --url https://... --pair-count 4`
 8. Benchmark plain health vs a tiny KV read with:
    `bun run scripts/profile-kv-read-deployment.ts --url https://...`
-9. Seed the pair-4 Vectorize shadow index with:
-   `bun run scripts/seed-vectorize-index.ts --url https://... --pair-count 4 --admin-token ...`
-10. Compare the current bucket matcher against the Vectorize shadow path with:
+9. Compare the current Vectorize stages with:
    `bun run scripts/profile-vectorize-deployment.ts --url https://... --pair-count 4`
 
 `POST /solve` accepts a raw `NodeWithPortPoints` payload and returns either:
@@ -55,6 +49,8 @@ Typical flow:
 - a freshly solved and validated route set, which is then written back to KV.
 
 The returned routes are mapped back onto the caller's original connection names.
+Cache hits now use the single-node Vectorize path: query the nearest entries,
+fetch those entry payloads from KV, and then reattach and validate them.
 
 `POST /solve-batch-binary` is the low-overhead batch path. It accepts a packed
 binary request containing up to 64 nodes encoded as quantized center/size data
@@ -71,9 +67,6 @@ binary batch request:
 
 - `decode-binary`: body read + binary decode
 - `canonicalize-binary`: decode + canonicalization + z-signature bucketing
-- `load-buckets-binary`: canonicalization + raw KV reads for unique buckets
-- `parse-buckets-binary`: KV reads + JSON parse of those bucket payloads
-- `match-binary`: bucket parse + cache-match attempt only, with no solver
 - `solve-batch-lite-binary`: full solve-cache batch path with a tiny JSON response
 - `vectorize-query-binary`: canonicalization + Vectorize ANN queries only
 - `vectorize-fetch-binary`: Vectorize ANN queries + KV fetch of the top ids
@@ -89,5 +82,5 @@ Notes:
 - `wrangler.toml` ships with placeholder KV ids on purpose. Replace them after
   creating the namespace.
 - The seed script expands each validated cache entry across all solve-cache
-  symmetries, groups the resulting variants by `${pairCount}:${zSignature}`, and
-  uploads those buckets through the authenticated admin endpoint.
+  symmetries and uploads those transformed variants to KV + Vectorize through
+  the authenticated admin endpoint.

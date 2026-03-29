@@ -6,6 +6,7 @@ import type { NodeWithPortPoints } from "../../lib/types";
 const DEFAULT_PAIR_COUNT = 4;
 const DEFAULT_SAMPLE_COUNT = 32;
 const DEFAULT_REPEAT_COUNT = 3;
+const DEFAULT_REQUEST_PATH = "/solve";
 
 const parseFlagValue = (argv: string[], flagName: string) => {
   const flagIndex = argv.findIndex((argument) => argument === flagName);
@@ -36,6 +37,12 @@ const requireFlagValue = (argv: string[], flagName: string) => {
 
   return value;
 };
+
+const parseStringFlag = (
+  argv: string[],
+  flagName: string,
+  defaultValue: string,
+) => parseFlagValue(argv, flagName) ?? defaultValue;
 
 const percentile = (sortedValues: number[], percentileValue: number) => {
   if (sortedValues.length === 0) return 0;
@@ -75,10 +82,11 @@ const toNodeWithPortPoints = (
 
 const postSolveRequest = async (
   deploymentUrl: string,
+  requestPath: string,
   nodeWithPortPoints: unknown,
 ) => {
   const startedAt = performance.now();
-  const response = await fetch(`${deploymentUrl}/solve`, {
+  const response = await fetch(`${deploymentUrl}${requestPath}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -105,6 +113,11 @@ const main = async () => {
   const argv = process.argv.slice(2);
   const deploymentUrl = requireFlagValue(argv, "--url").replace(/\/$/, "");
   const pairCount = parseIntegerFlag(argv, "--pair-count", DEFAULT_PAIR_COUNT);
+  const requestPath = parseStringFlag(
+    argv,
+    "--request-path",
+    DEFAULT_REQUEST_PATH,
+  );
   const sampleCount = parseIntegerFlag(
     argv,
     "--sample-count",
@@ -132,11 +145,11 @@ const main = async () => {
   );
 
   console.log(
-    `Warming ${sampleCount} samples against ${deploymentUrl} for pairCount=${pairCount}`,
+    `Warming ${sampleCount} samples against ${deploymentUrl}${requestPath} for pairCount=${pairCount}`,
   );
 
   for (const sample of samples) {
-    await postSolveRequest(deploymentUrl, sample);
+    await postSolveRequest(deploymentUrl, requestPath, sample);
   }
 
   const externalLatencies: number[] = [];
@@ -152,7 +165,7 @@ const main = async () => {
 
   for (let repeatIndex = 0; repeatIndex < repeatCount; repeatIndex += 1) {
     for (const sample of samples) {
-      const result = await postSolveRequest(deploymentUrl, sample);
+      const result = await postSolveRequest(deploymentUrl, requestPath, sample);
       externalLatencies.push(result.elapsedMs);
       internalTotals.push(result.body.timingsMs.total);
 

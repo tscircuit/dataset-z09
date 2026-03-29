@@ -128,7 +128,6 @@ const main = async () => {
   const requestBody = encodedRequest.bytes.slice().buffer;
 
   const endpoints = [
-    "/debug/stage/match-binary",
     "/debug/stage/vectorize-query-binary",
     "/debug/stage/vectorize-fetch-binary",
     "/debug/stage/vectorize-match-binary",

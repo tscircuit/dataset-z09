@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "seed": "bun run scripts/seed-deployment-cache.ts",
+    "seed": "bun run scripts/seed-vectorize-index.ts",
     "seed:vectorize": "bun run scripts/seed-vectorize-index.ts",
     "profile": "bun run scripts/profile-deployment.ts",
     "profile:kv": "bun run scripts/profile-kv-read-deployment.ts",

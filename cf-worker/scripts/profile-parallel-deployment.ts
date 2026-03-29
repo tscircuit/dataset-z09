@@ -6,8 +6,8 @@ import { encodeBinarySolveBatchRequest } from "../src/binary";
 const DEFAULT_PAIR_COUNT = 4;
 const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_REPEAT_COUNT = 3;
+const DEFAULT_CONCURRENCY_LEVELS = [8, 16, 32] as const;
 const DEFAULT_ENDPOINTS = [
-  "/debug/stage/match-binary",
   "/debug/stage/vectorize-match-binary",
   "/solve-batch-binary",
 ] as const;
@@ -56,6 +56,29 @@ const parseListFlag = (
     .split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
+};
+
+const parseIntegerListFlag = (
+  argv: string[],
+  flagName: string,
+  defaultValue: readonly number[],
+) => {
+  const rawValue = parseFlagValue(argv, flagName);
+  if (!rawValue) {
+    return [...defaultValue];
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map((value) => {
+      const parsedValue = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+        throw new Error(`Invalid ${flagName} value: ${value}`);
+      }
+      return parsedValue;
+    });
 };
 
 const percentile = (sortedValues: number[], percentileValue: number) => {
@@ -107,7 +130,7 @@ const postBinaryJsonEndpoint = async (
     },
     body: requestBody,
   });
-  if (pathName === "/solve-batch-binary") {
+  if (pathName.startsWith("/solve-batch-binary")) {
     const bodyBuffer = await response.arrayBuffer();
     const endedAt = performance.now();
 
@@ -139,22 +162,42 @@ const postBinaryJsonEndpoint = async (
   };
 };
 
-const runParallelSingles = async (
+const runConcurrentSingles = async (
   deploymentUrl: string,
   pathName: string,
   singleRequestBodies: ArrayBuffer[],
+  concurrency: number,
 ) => {
   const startedAt = performance.now();
-  const results = await Promise.all(
-    singleRequestBodies.map((requestBody) =>
-      postBinaryJsonEndpoint(deploymentUrl, pathName, requestBody),
-    ),
+  const results = new Array<Awaited<ReturnType<typeof postBinaryJsonEndpoint>>>(
+    singleRequestBodies.length,
+  );
+  let nextIndex = 0;
+
+  const workerCount = Math.min(concurrency, singleRequestBodies.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const requestIndex = nextIndex;
+        nextIndex += 1;
+
+        if (requestIndex >= singleRequestBodies.length) {
+          return;
+        }
+
+        results[requestIndex] = await postBinaryJsonEndpoint(
+          deploymentUrl,
+          pathName,
+          singleRequestBodies[requestIndex]!,
+        );
+      }
+    }),
   );
   const endedAt = performance.now();
 
   return {
     wallMs: endedAt - startedAt,
-    perRequestLatencies: results.map((result) => result.elapsedMs),
+    perRequestLatencies: results.map((result) => result!.elapsedMs),
     lastBody: results.at(-1)?.body ?? null,
   };
 };
@@ -170,6 +213,11 @@ const main = async () => {
     DEFAULT_REPEAT_COUNT,
   );
   const endpoints = parseListFlag(argv, "--endpoints", DEFAULT_ENDPOINTS);
+  const concurrencyLevels = parseIntegerListFlag(
+    argv,
+    "--concurrency-levels",
+    DEFAULT_CONCURRENCY_LEVELS,
+  );
 
   const healthResponse = await fetch(`${deploymentUrl}/health`);
   if (!healthResponse.ok) {
@@ -198,7 +246,12 @@ const main = async () => {
   for (const endpoint of endpoints) {
     try {
       await postBinaryJsonEndpoint(deploymentUrl, endpoint, batchRequestBody);
-      await runParallelSingles(deploymentUrl, endpoint, singleRequestBodies);
+      await runConcurrentSingles(
+        deploymentUrl,
+        endpoint,
+        singleRequestBodies,
+        Math.max(...concurrencyLevels),
+      );
     } catch (error) {
       console.log(`Warmup failed for ${endpoint}:`, error);
     }
@@ -206,10 +259,16 @@ const main = async () => {
 
   for (const endpoint of endpoints) {
     const batchWallTimes: number[] = [];
-    const parallelWallTimes: number[] = [];
-    const parallelPerRequestLatencies: number[] = [];
+    const concurrentResults = new Map<
+      number,
+      { wallTimes: number[]; perRequestLatencies: number[]; lastBody: Record<string, unknown> | null }
+    >(
+      concurrencyLevels.map((concurrency) => [
+        concurrency,
+        { wallTimes: [], perRequestLatencies: [], lastBody: null },
+      ]),
+    );
     let lastBatchBody: Record<string, unknown> | null = null;
-    let lastParallelBody: Record<string, unknown> | null = null;
     let failed = false;
     let failureMessage: string | null = null;
 
@@ -223,14 +282,23 @@ const main = async () => {
         batchWallTimes.push(batchResult.elapsedMs);
         lastBatchBody = batchResult.body;
 
-        const parallelResult = await runParallelSingles(
-          deploymentUrl,
-          endpoint,
-          singleRequestBodies,
-        );
-        parallelWallTimes.push(parallelResult.wallMs);
-        parallelPerRequestLatencies.push(...parallelResult.perRequestLatencies);
-        lastParallelBody = parallelResult.lastBody;
+        for (const concurrency of concurrencyLevels) {
+          const concurrentResult = await runConcurrentSingles(
+            deploymentUrl,
+            endpoint,
+            singleRequestBodies,
+            concurrency,
+          );
+          const aggregate =
+            concurrentResults.get(concurrency) ??
+            { wallTimes: [], perRequestLatencies: [], lastBody: null };
+          aggregate.wallTimes.push(concurrentResult.wallMs);
+          aggregate.perRequestLatencies.push(
+            ...concurrentResult.perRequestLatencies,
+          );
+          aggregate.lastBody = concurrentResult.lastBody;
+          concurrentResults.set(concurrency, aggregate);
+        }
       } catch (error) {
         failed = true;
         failureMessage = error instanceof Error ? error.message : String(error);
@@ -244,16 +312,25 @@ const main = async () => {
       continue;
     }
     console.log("Single batch wall (ms):", computeStats(batchWallTimes));
-    console.log(
-      "64 concurrent singles wall (ms):",
-      computeStats(parallelWallTimes),
-    );
-    console.log(
-      "64 concurrent singles per-request latency (ms):",
-      computeStats(parallelPerRequestLatencies),
-    );
     console.log("Last batch response:", lastBatchBody);
-    console.log("Last parallel response:", lastParallelBody);
+    for (const concurrency of concurrencyLevels) {
+      const concurrentResult = concurrentResults.get(concurrency);
+      if (!concurrentResult) {
+        continue;
+      }
+      console.log(
+        `Concurrency ${concurrency} wall (ms):`,
+        computeStats(concurrentResult.wallTimes),
+      );
+      console.log(
+        `Concurrency ${concurrency} per-request latency (ms):`,
+        computeStats(concurrentResult.perRequestLatencies),
+      );
+      console.log(
+        `Last concurrency ${concurrency} response:`,
+        concurrentResult.lastBody,
+      );
+    }
   }
 };
 
